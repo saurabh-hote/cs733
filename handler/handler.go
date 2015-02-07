@@ -74,7 +74,7 @@ func handleConn(conn net.Conn) {
 				log.Println("ERROR in encoding to gob:", err)
 			}
 
-			fmt.Println(data) //	data contains the encoded command to be sent to Append
+			fmt.Println(data) // Delete this line. data contains the encoded command to be sent to Append.
 
 			//			ch <- data		// Use it
 
