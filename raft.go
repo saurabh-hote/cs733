@@ -1,10 +1,11 @@
-package raft
+package main
 
 import (
 	"log"
 	"math"
 	"net/rpc"
 	"strconv"
+	"fmt"
 )
 
 type Lsn uint64      //Log sequence number, unique for all time.
@@ -43,11 +44,12 @@ type Raft struct {
 	clusterConfig     *ClusterConfig
 	serverConfig      *ServerConfig
 	commitCh          chan LogEntry
-	mySharedLog       MySharedLog
 	commitIndex       Lsn
 	leaderCommitIndex Lsn
-	outbox            chan LogEntry
-	inbox             chan LogEntry
+	
+	//entries for implementing Shared Log
+	logEntryBuffer    []LogEntry
+	currentLsn        Lsn
 }
 
 // Creates a raft object. This implements the SharedLog interface.
@@ -82,17 +84,11 @@ func (entry MyLogEntry) Committed() bool {
 	return entry.committed
 }
 
-//SharedLog interface implementation
-type MySharedLog struct {
-	logEntryBuffer []LogEntry
-	currentLsn     Lsn
-}
-
-func (mySharedLog MySharedLog) Append(data []byte) (LogEntry, error) {
+func (raft Raft) Append(data []byte) (LogEntry, error) {
 	if len(data) > 0 {
-		mySharedLog.currentLsn++
-		logEntry := MyLogEntry{mySharedLog.currentLsn, data, false}
-		mySharedLog.logEntryBuffer = append(mySharedLog.logEntryBuffer, logEntry)
+		raft.currentLsn++
+		logEntry := MyLogEntry{raft.currentLsn, data, false}
+		raft.logEntryBuffer = append(raft.logEntryBuffer, logEntry)
 		return logEntry, nil
 	} else {
 		return nil, new(ErrRedirect)
@@ -108,12 +104,13 @@ type RPCMessage struct {
 	previousLeaderSharedLogIndex Lsn
 }
 
-func (raft *Raft) AppendEntryRPC(message *RPCMessage, reply *bool) error {
+//TODO: need to check the name of method here
+func (raft *Raft) AppendEntriesRPC(message *RPCMessage, reply *bool) error {
 
 	//case 1 - term is less than cyurrent term //TODO: to be implemented
 
 	//case 2 - if follower contains entry @ previousLeaderLogIndex with same term then OK
-	if raft.mySharedLog.logEntryBuffer[len(raft.mySharedLog.logEntryBuffer)-1].Lsn() >= message.previousLeaderSharedLogIndex {
+	if raft.logEntryBuffer[len(raft.logEntryBuffer)-1].Lsn() >= message.previousLeaderSharedLogIndex {
 		*reply = false
 		return nil
 	}
@@ -121,12 +118,12 @@ func (raft *Raft) AppendEntryRPC(message *RPCMessage, reply *bool) error {
 	//case 3 - same index but different Terms then delete that entry and further all log entries//TODO: to be implemented later
 
 	//now append the new entry received
-	raft.mySharedLog.currentLsn++
-	raft.mySharedLog.logEntryBuffer = append(raft.mySharedLog.logEntryBuffer, message.logEntry)
+	raft.currentLsn++
+	raft.logEntryBuffer = append(raft.logEntryBuffer, message.logEntry)
 
-	//case 4 - if leaderCommitIndex > commitIndex then set commitIndex = min(leaderCommitIndex, raft.mySharedLog.currentLsn)
+	//case 4 - if leaderCommitIndex > commitIndex then set commitIndex = min(leaderCommitIndex, raft.currentLsn)
 	if message.leaderCommitIndex > raft.commitIndex {
-		raft.commitIndex = Lsn(math.Min(float64(message.leaderCommitIndex), float64(raft.mySharedLog.currentLsn)))
+		raft.commitIndex = Lsn(math.Min(float64(message.leaderCommitIndex), float64(raft.currentLsn)))
 	}
 
 	*reply = true
@@ -147,7 +144,7 @@ func (raft *Raft) broadcastMessageToReplicas(message *RPCMessage) bool {
 
 			// Synchronous call
 			var reply bool
-			err = remoteServer.Call("Raft.AppendRPC", message, &reply)
+			err = remoteServer.Call("Raft.AppendEntriesRPC", message, &reply)
 			if err != nil {
 				log.Fatal("RPC call: ", err)
 			}
@@ -179,12 +176,12 @@ func startServer(serverConfig ServerConfig, clusterConfig ClusterConfig) {
 
 //This function is called by the ConnectionHandler module upon receiving command from the client
 func (raft *Raft) updateSharedLog(data []byte) {
-	logEntry, err := raft.mySharedLog.Append(data)
+	logEntry, err := raft.Append(data)
 	if err != nil {
 		//TODO: this case would never happen
 	}
 
-	rpcMessage := &RPCMessage{logEntry, raft.serverConfig.Id, raft.leaderCommitIndex, raft.mySharedLog.logEntryBuffer[len(raft.mySharedLog.logEntryBuffer)-1].Lsn()}
+	rpcMessage := &RPCMessage{logEntry, raft.serverConfig.Id, raft.leaderCommitIndex, raft.logEntryBuffer[len(raft.logEntryBuffer)-1].Lsn()}
 	if raft.broadcastMessageToReplicas(rpcMessage) {
 		//TODO: commit the log entry
 		//write to disk
@@ -209,4 +206,6 @@ func main() {
 	for _, serverConfig := range servers {
 		go startServer(serverConfig, clusterConfig)
 	}
+	
+	fmt.Scanln() //Press any key for exiting the server
 }
