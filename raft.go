@@ -1,11 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"math"
 	"net/rpc"
 	"strconv"
-	"fmt"
 )
 
 type Lsn uint64      //Log sequence number, unique for all time.
@@ -46,10 +46,10 @@ type Raft struct {
 	commitCh          chan LogEntry
 	commitIndex       Lsn
 	leaderCommitIndex Lsn
-	
+
 	//entries for implementing Shared Log
-	logEntryBuffer    []LogEntry
-	currentLsn        Lsn
+	logEntryBuffer []LogEntry
+	currentLsn     Lsn
 }
 
 // Creates a raft object. This implements the SharedLog interface.
@@ -206,6 +206,6 @@ func main() {
 	for _, serverConfig := range servers {
 		go startServer(serverConfig, clusterConfig)
 	}
-	
+
 	fmt.Scanln() //Press any key for exiting the server
 }
