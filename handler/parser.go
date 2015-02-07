@@ -7,15 +7,6 @@ import (
 	"strings"
 )
 
-const (
-	Set = iota
-	Get
-	Getm
-	Cas
-	Delete
-	Cleanup
-)
-
 func Parse(cmd string) (Command, error) {
 	arr := strings.Split(cmd, " ")
 	c := Command{0, "", 0, 0, 0, nil}

@@ -8,7 +8,17 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"strings"
+)
+
+const (
+	Set = iota
+	Get
+	Getm
+	Cas
+	Delete
+	Cleanup
 )
 
 type Command struct {
@@ -20,7 +30,21 @@ type Command struct {
 	Data     []byte
 }
 
-func handleConn(conn net.Conn) {
+func StartConnectionHandler(clientPort int) {
+	sock, err := net.Listen("tcp", ":"+strconv.FormatInt(int64(clientPort), 10))
+	if err != nil {
+		return
+	}
+	for {
+		conn, err := sock.Accept()
+		if err != nil {
+			return
+		}
+		go HandleConn(conn)
+	}
+}
+
+func HandleConn(conn net.Conn) {
 	addr := conn.RemoteAddr()
 	log.Println(addr, "connected.")
 	reader := bufio.NewReader(conn)
@@ -48,7 +72,7 @@ func handleConn(conn net.Conn) {
 			write(writer, addr, e.Error())
 		} else {
 			//Do work here
-			if cmd.Action == 0 || cmd.Action == 3 {
+			if cmd.Action == Set || cmd.Action == Cas {
 				buf := make([]byte, cmd.Numbytes)
 				_, ed := io.ReadFull(reader, buf)
 				if (ed) != nil {
@@ -69,7 +93,7 @@ func handleConn(conn net.Conn) {
 				}
 			}
 
-			data, err := encode(cmd)
+			data, err := EncodeCommand(cmd)
 			if err != nil {
 				log.Println("ERROR in encoding to gob:", err)
 			}
@@ -89,11 +113,21 @@ func handleConn(conn net.Conn) {
 }
 
 //Encode using gob
-func encode(cmd Command) ([]byte, error) {
+func EncodeCommand(cmd Command) ([]byte, error) {
 	var buff bytes.Buffer
 	enc := gob.NewEncoder(&buff)
 	err := enc.Encode(cmd)
 	return buff.Bytes(), err
+}
+
+//Decode using gob
+func DecodeCommand(data []byte) (Command, error) {
+	var buff bytes.Buffer
+	buff.Write(data)
+	enc := gob.NewDecoder(&buff)
+	var command Command
+	err := enc.Decode(&command)
+	return command, err
 }
 
 //Writes in TCP connection
