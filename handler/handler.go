@@ -30,7 +30,12 @@ type Command struct {
 	Data     []byte
 }
 
-func StartConnectionHandler(clientPort int) {
+type AppendRequestMessage struct {
+	Data            []byte
+	ResponseChannel *chan string
+}
+
+func StartConnectionHandler(clientPort int, appendReqChannel chan AppendRequestMessage) {
 	sock, err := net.Listen("tcp", ":"+strconv.FormatInt(int64(clientPort), 10))
 	if err != nil {
 		return
@@ -40,15 +45,19 @@ func StartConnectionHandler(clientPort int) {
 		if err != nil {
 			return
 		}
-		go HandleConn(conn)
+		go HandleConn(conn, &appendReqChannel)
 	}
 }
 
-func HandleConn(conn net.Conn) {
+func HandleConn(conn net.Conn, appendReqChannel *chan AppendRequestMessage) {
 	addr := conn.RemoteAddr()
 	log.Println(addr, "connected.")
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
+	responseChannel := make(chan string)
+
+	//launch client specific go routine for initiating the repsonse channel
+	go pollAndReply(writer, addr, &responseChannel)
 
 	for {
 		//Command Prompt
@@ -69,7 +78,7 @@ func HandleConn(conn net.Conn) {
 
 		cmd, e := Parse(str)
 		if e != nil {
-			write(writer, addr, e.Error())
+			responseChannel <- e.Error()
 		} else {
 			//Do work here
 			if cmd.Action == Set || cmd.Action == Cas {
@@ -88,7 +97,7 @@ func HandleConn(conn net.Conn) {
 				}
 				cmd.Data = buf
 				if (strings.TrimRight(tail, "\r\n") != "") || (len(cmd.Data) != cmd.Numbytes) {
-					write(writer, addr, "ERR_CMD_ERR\r\n")
+					responseChannel <- "ERR_CMD_ERR\r\n"
 					continue
 				}
 			}
@@ -98,13 +107,12 @@ func HandleConn(conn net.Conn) {
 				log.Println("ERROR in encoding to gob:", err)
 			}
 
-			fmt.Println(data) // Delete this line. data contains the encoded command to be sent to Append.
+			//now create message for the shared log module
+			message := AppendRequestMessage{data, &responseChannel}
 
-			//			ch <- data		// Use it
-
-			//			reply := <-resp	// Get response
-
-			//			write(writer, addr, reply)	//	Write response on TCP conn
+			//push the messgae onto the shared channel
+			//This will block until previous request gets completed
+			*appendReqChannel <- message
 		}
 	}
 	// Shut down the connection.
@@ -130,6 +138,7 @@ func DecodeCommand(data []byte) (Command, error) {
 	return command, err
 }
 
+/*
 //Writes in TCP connection
 func write(w *bufio.Writer, a net.Addr, s string) {
 	_, err := fmt.Fprintf(w, s)
@@ -139,5 +148,21 @@ func write(w *bufio.Writer, a net.Addr, s string) {
 	err = w.Flush()
 	if err != nil {
 		log.Println("ERROR flushing:", a, err)
+	}
+}
+*/
+
+func pollAndReply(w *bufio.Writer, clientAddr net.Addr, responseChannel *chan string) {
+	for {
+		replyMessage := <-*responseChannel
+
+		_, err := fmt.Fprintf(w, replyMessage)
+		if err != nil {
+			log.Println("ERROR writing:", clientAddr, replyMessage)
+		}
+		err = w.Flush()
+		if err != nil {
+			log.Println("ERROR flushing:", clientAddr, err)
+		}
 	}
 }

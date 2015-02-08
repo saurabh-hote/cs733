@@ -106,8 +106,12 @@ func Initialize(ch chan LogEntry) { //	This channel has to be of type MyLogEntry
 				r = "ERR_INTERNAL\r\n"
 			}
 		}
-		fmt.Println(r) //	Delete this line
-		//		cmd.resp <- r	// Send response to appropriate handler here.
+		
+		// Send response to appropriate handler's channel
+		ResponseChannelStore.RLock()
+		responseChannel := ResponseChannelStore.m[logEntry.Lsn()]
+		ResponseChannelStore.RUnlock()
+		*responseChannel <- r	
 	}
 }
 

@@ -1,14 +1,12 @@
 package raft
 
 import (
-	"encoding/json"
 	handler "github.com/swapniel99/cs733-raft/handler"
-	"io/ioutil"
 	"log"
 	"math"
 	"net/rpc"
-	"os"
 	"strconv"
+	"sync"
 )
 
 type Lsn uint64      //Log sequence number, unique for all time.
@@ -44,15 +42,18 @@ type ClusterConfig struct {
 
 // Raft implements the SharedLog interface.
 type Raft struct {
-	clusterConfig     *ClusterConfig
-	serverID          int
-	commitCh          chan LogEntry
-	commitIndex       Lsn
-	leaderCommitIndex Lsn
+	ClusterConfig     *ClusterConfig
+	ServerID          int
+	CommitCh          chan LogEntry
+	CommitIndex       Lsn
+	LeaderCommitIndex Lsn
 
 	//entries for implementing Shared Log
-	logEntryBuffer []LogEntry
-	currentLsn     Lsn
+	LogEntryBuffer []LogEntry
+	CurrentLsn     Lsn
+
+	//channel for receving append requests
+	AppendRequestChannel chan handler.AppendRequestMessage
 }
 
 // Creates a raft object. This implements the SharedLog interface.
@@ -61,9 +62,9 @@ type Raft struct {
 // entries are recovered and replayed
 func NewRaft(config *ClusterConfig, thisServerId int, commitCh chan LogEntry) (*Raft, error) {
 	raft := new(Raft)
-	raft.clusterConfig = config
-	raft.serverID = thisServerId
-	raft.commitCh = commitCh
+	raft.ClusterConfig = config
+	raft.ServerID = thisServerId
+	raft.CommitCh = commitCh
 	return raft, nil
 }
 
@@ -93,9 +94,9 @@ func (entry MyLogEntry) Committed() bool {
 
 func (raft Raft) Append(data []byte) (LogEntry, error) {
 	if len(data) > 0 {
-		raft.currentLsn++
-		logEntry := MyLogEntry{raft.currentLsn, data, false}
-		raft.logEntryBuffer = append(raft.logEntryBuffer, logEntry)
+		raft.CurrentLsn++
+		logEntry := MyLogEntry{raft.CurrentLsn, data, false}
+		raft.LogEntryBuffer = append(raft.LogEntryBuffer, logEntry)
 		return logEntry, nil
 	} else {
 		return nil, new(ErrRedirect)
@@ -111,13 +112,19 @@ type RPCMessage struct {
 	previousLeaderSharedLogIndex Lsn
 }
 
+var ResponseChannelStore = struct {
+	sync.RWMutex
+	m map[Lsn]*chan string
+}{m: make(map[Lsn]*chan string)}
+
+
 //TODO: need to check the name of method here
 func (raft *Raft) AppendEntriesRPC(message *RPCMessage, reply *bool) error {
 
 	//case 1 - term is less than cyurrent term //TODO: to be implemented
 
 	//case 2 - if follower contains entry @ previousLeaderLogIndex with same term then OK
-	if raft.logEntryBuffer[len(raft.logEntryBuffer)-1].Lsn() >= message.previousLeaderSharedLogIndex {
+	if raft.LogEntryBuffer[len(raft.LogEntryBuffer)-1].Lsn() >= message.previousLeaderSharedLogIndex {
 		*reply = false
 		return nil
 	}
@@ -125,12 +132,12 @@ func (raft *Raft) AppendEntriesRPC(message *RPCMessage, reply *bool) error {
 	//case 3 - same index but different Terms then delete that entry and further all log entries//TODO: to be implemented later
 
 	//now append the new entry received
-	raft.currentLsn++
-	raft.logEntryBuffer = append(raft.logEntryBuffer, message.logEntry)
+	raft.CurrentLsn++
+	raft.LogEntryBuffer = append(raft.LogEntryBuffer, message.logEntry)
 
 	//case 4 - if leaderCommitIndex > commitIndex then set commitIndex = min(leaderCommitIndex, raft.currentLsn)
-	if message.leaderCommitIndex > raft.commitIndex {
-		raft.commitIndex = Lsn(math.Min(float64(message.leaderCommitIndex), float64(raft.currentLsn)))
+	if message.leaderCommitIndex > raft.CommitIndex {
+		raft.CommitIndex = Lsn(math.Min(float64(message.leaderCommitIndex), float64(raft.CurrentLsn)))
 	}
 
 	*reply = true
@@ -141,8 +148,8 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 	//TODO: contact all the replicas
 	done := make(chan bool)
 
-	for _, server := range raft.clusterConfig.Servers {
-		if server.Id == raft.serverID {
+	for _, server := range raft.ClusterConfig.Servers {
+		if server.Id == raft.ServerID {
 			continue
 		}
 		//Make RPC call on  server.LogPort in a seperate go routine
@@ -164,7 +171,7 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 
 	//TODO: need to rectify the design as the go routine would block if it does not receive sufficeint acks
 	ackCount := 0
-	for ackCount < (len(raft.clusterConfig.Servers)/2 + 1) {
+	for ackCount < (len(raft.ClusterConfig.Servers)/2 + 1) {
 		if <-done {
 			ackCount += 1
 		}
@@ -172,85 +179,36 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 	return true
 }
 
-func StartServer(raft Raft) {
+func (raft *Raft) StartServer() {
 	//register for RPC
-	rpc.Register(raft)
+	rpc.Register(*raft)
 
-	//start kvstore module
-	go Initialize(raft.commitCh)
-
-	//start conenction handler module
-	go raft.InitializeConnectionHandler()
-}
-
-//This function is called by the ConnectionHandler module upon receiving command from the client
-func (raft *Raft) UpdateSharedLog(data []byte) {
-	logEntry, err := raft.Append(data)
-	if err != nil {
-		//TODO: this case would never happen
-	}
-
-	rpcMessage := &RPCMessage{logEntry, raft.serverID, raft.leaderCommitIndex,
-		raft.logEntryBuffer[len(raft.logEntryBuffer)-1].Lsn()}
-	if raft.BroadcastMessageToReplicas(rpcMessage) {
-		//TODO: commit the log entry
-		//write to disk
-
-		//update the commit index
-
-	}
-}
-
-func ReadConfig(path string) (*ClusterConfig, error) {
-	data, err := ioutil.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var conf ClusterConfig
-	err = json.Unmarshal(data, &conf)
-	return &conf, err
-}
-
-func main() {
-	//TODO: Read the config.json file to get all the server configurations
-	clusterConfig, err := ReadConfig("config.json")
-	if err != nil {
-		log.Println("Error parsing config file : ", err.Error())
-	}
-
-	/*
-		servers := []ServerConfig{
-			{1, "localhost", 9000, 10000}, // {id, hostname, clientPort, logPort}
-			{2, "localhost", 9001, 10001},
-			{3, "localhost", 9002, 10002},
-			{4, "localhost", 9003, 10003},
-			{5, "localhost", 9004, 10004},
+	//now start listening on the input channel from the connection handler for new append requests
+	var message handler.AppendRequestMessage
+	for {
+		message = <- raft.AppendRequestChannel
+		logEntry, err := raft.Append(message.Data)
+		if err != nil {
+			//TODO: this case would never happen
+			*message.ResponseChannel <- "ERR_APPEND"
+			continue
 		}
 
-	*/
-	//starting the server
-	serverID, err := strconv.Atoi(os.Args[1])
-	if err != nil {
-		log.Println("Invalid Server ID provided : ", err.Error())
-	}
-	var ch chan LogEntry
-	raft, err := NewRaft(clusterConfig, serverID, ch)
-	if err != nil {
-		log.Println("Error creating server instance : ", err.Error())
-	}
-	StartServer(*raft)
-}
+		//put entry in the global map
+		ResponseChannelStore.Lock()
+		ResponseChannelStore.m[logEntry.Lsn()] = message.ResponseChannel
+		ResponseChannelStore.Unlock()
 
-func (raft *Raft) InitializeConnectionHandler() {
-	var clientPort int
-	for _, server := range raft.clusterConfig.Servers {
-		if server.Id == raft.serverID {
-			clientPort = server.ClientPort
+		//now check for consensus
+		rpcMessage := &RPCMessage{logEntry, raft.ServerID, raft.LeaderCommitIndex,
+			raft.LogEntryBuffer[len(raft.LogEntryBuffer)-1].Lsn()}
+		if raft.BroadcastMessageToReplicas(rpcMessage) {
+			//TODO: commit the log entry
+			//write to disk
+
+			//update the commit index
+
 		}
-	}
-	if clientPort == 0 {
-		log.Println("Server's client port not valid")
-	} else {
-		handler.StartConnectionHandler(clientPort)
+
 	}
 }
