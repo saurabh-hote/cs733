@@ -45,13 +45,12 @@ func StartConnectionHandler(clientPort int, appendReqChannel chan AppendRequestM
 		if err != nil {
 			return
 		}
-		go HandleConn(conn, &appendReqChannel)
+		go HandleConn(conn, appendReqChannel)
 	}
 }
 
-func HandleConn(conn net.Conn, appendReqChannel *chan AppendRequestMessage) {
+func HandleConn(conn net.Conn, appendReqChannel chan AppendRequestMessage) {
 	addr := conn.RemoteAddr()
-	log.Println(addr, "connected.")
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 	responseChannel := make(chan string)
@@ -103,6 +102,7 @@ func HandleConn(conn net.Conn, appendReqChannel *chan AppendRequestMessage) {
 			}
 
 			data, err := EncodeCommand(cmd)
+
 			if err != nil {
 				log.Println("ERROR in encoding to gob:", err)
 			}
@@ -112,7 +112,7 @@ func HandleConn(conn net.Conn, appendReqChannel *chan AppendRequestMessage) {
 
 			//push the messgae onto the shared channel
 			//This will block until previous request gets completed
-			*appendReqChannel <- message
+			appendReqChannel <- message
 		}
 	}
 	// Shut down the connection.

@@ -3,10 +3,15 @@ package raft
 import (
 	handler "github.com/swapniel99/cs733-raft/handler"
 	"log"
-	"math"
 	"net/rpc"
 	"strconv"
 	"sync"
+)
+
+const (
+	FOLLOWER = iota
+	CANDIDATE
+	LEADER
 )
 
 type Lsn uint64      //Log sequence number, unique for all time.
@@ -54,6 +59,9 @@ type Raft struct {
 
 	//channel for receving append requests
 	AppendRequestChannel chan handler.AppendRequestMessage
+
+	//state of the server
+	CurrentState int
 }
 
 // Creates a raft object. This implements the SharedLog interface.
@@ -65,6 +73,8 @@ func NewRaft(config *ClusterConfig, thisServerId int, commitCh chan LogEntry) (*
 	raft.ClusterConfig = config
 	raft.ServerID = thisServerId
 	raft.CommitCh = commitCh
+	raft.AppendRequestChannel = make(chan handler.AppendRequestMessage)
+	raft.LogEntryBuffer = make([]LogEntry, 0)
 	return raft, nil
 }
 
@@ -92,7 +102,7 @@ func (entry MyLogEntry) Committed() bool {
 	return entry.committed
 }
 
-func (raft Raft) Append(data []byte) (LogEntry, error) {
+func (raft *Raft) Append(data []byte) (LogEntry, error) {
 	if len(data) > 0 {
 		raft.CurrentLsn++
 		logEntry := MyLogEntry{raft.CurrentLsn, data, false}
@@ -117,28 +127,29 @@ var ResponseChannelStore = struct {
 	m map[Lsn]*chan string
 }{m: make(map[Lsn]*chan string)}
 
-
 //TODO: need to check the name of method here
 func (raft *Raft) AppendEntriesRPC(message *RPCMessage, reply *bool) error {
 
-	//case 1 - term is less than cyurrent term //TODO: to be implemented
+	/*
+		//case 1 - term is less than cyurrent term //TODO: to be implemented
 
-	//case 2 - if follower contains entry @ previousLeaderLogIndex with same term then OK
-	if raft.LogEntryBuffer[len(raft.LogEntryBuffer)-1].Lsn() >= message.previousLeaderSharedLogIndex {
-		*reply = false
-		return nil
-	}
+		//case 2 - if follower contains entry @ previousLeaderLogIndex with same term then OK
+		if raft.LogEntryBuffer[len(raft.LogEntryBuffer)-1].Lsn() >= message.previousLeaderSharedLogIndex {
+			*reply = false
+			return nil
+		}
 
-	//case 3 - same index but different Terms then delete that entry and further all log entries//TODO: to be implemented later
+		//case 3 - same index but different Terms then delete that entry and further all log entries//TODO: to be implemented later
 
-	//now append the new entry received
-	raft.CurrentLsn++
-	raft.LogEntryBuffer = append(raft.LogEntryBuffer, message.logEntry)
+		//now append the new entry received
+		raft.CurrentLsn++
+		raft.LogEntryBuffer = append(raft.LogEntryBuffer, message.logEntry)
 
-	//case 4 - if leaderCommitIndex > commitIndex then set commitIndex = min(leaderCommitIndex, raft.currentLsn)
-	if message.leaderCommitIndex > raft.CommitIndex {
-		raft.CommitIndex = Lsn(math.Min(float64(message.leaderCommitIndex), float64(raft.CurrentLsn)))
-	}
+		//case 4 - if leaderCommitIndex > commitIndex then set commitIndex = min(leaderCommitIndex, raft.currentLsn)
+		if message.leaderCommitIndex > raft.CommitIndex {
+			raft.CommitIndex = Lsn(math.Min(float64(message.leaderCommitIndex), float64(raft.CurrentLsn)))
+		}
+	*/
 
 	*reply = true
 	return nil
@@ -153,25 +164,26 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 			continue
 		}
 		//Make RPC call on  server.LogPort in a seperate go routine
-		go func() {
-			remoteServer, err := rpc.Dial("tcp", server.Hostname+":"+strconv.Itoa(server.LogPort))
-			if err != nil {
-				log.Fatal("Dialing: ", err)
-			}
+		//go func() {
+		remoteServer, err := rpc.Dial("tcp", server.Hostname+":"+strconv.Itoa(server.LogPort))
+		if err != nil {
+			log.Println("Dialing: ", err)
+		} else {
 
 			// Synchronous call
 			var reply bool
 			err = remoteServer.Call("Raft.AppendEntriesRPC", message, &reply)
 			if err != nil {
-				log.Fatal("RPC call: ", err)
+				log.Println("RPC call: ", err)
 			}
 			done <- reply
-		}()
+		}
+		//	}()
 	}
 
 	//TODO: need to rectify the design as the go routine would block if it does not receive sufficeint acks
 	ackCount := 0
-	for ackCount < (len(raft.ClusterConfig.Servers)/2 + 1) {
+	for ackCount < (len(raft.ClusterConfig.Servers) / 2) {
 		if <-done {
 			ackCount += 1
 		}
@@ -180,13 +192,15 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 }
 
 func (raft *Raft) StartServer() {
+	log.Println("Started raft")
 	//register for RPC
 	rpc.Register(*raft)
 
 	//now start listening on the input channel from the connection handler for new append requests
 	var message handler.AppendRequestMessage
 	for {
-		message = <- raft.AppendRequestChannel
+		message = <-raft.AppendRequestChannel
+
 		logEntry, err := raft.Append(message.Data)
 		if err != nil {
 			//TODO: this case would never happen
@@ -203,6 +217,10 @@ func (raft *Raft) StartServer() {
 		rpcMessage := &RPCMessage{logEntry, raft.ServerID, raft.LeaderCommitIndex,
 			raft.LogEntryBuffer[len(raft.LogEntryBuffer)-1].Lsn()}
 		if raft.BroadcastMessageToReplicas(rpcMessage) {
+
+			log.Println("Received Consensus..!!")
+			raft.CommitCh <- logEntry
+
 			//TODO: commit the log entry
 			//write to disk
 

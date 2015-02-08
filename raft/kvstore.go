@@ -18,13 +18,13 @@ type value struct {
 }
 
 //Map Manager
-func Initialize(ch chan LogEntry) { //	This channel has to be of type MyLogEntry. This is commitCh
+func InitializeKVStore(ch *chan LogEntry) { //	This channel has to be of type MyLogEntry. This is commitCh
 	//The map which actually stores values
 	m := make(map[string]value)
 	h := &nodeHeap{}
 	var counter uint64 = 0
-	go cleaner(1, ch)
-	for logEntry := range ch {
+	go cleaner(1, *ch)
+	for logEntry := range *ch {
 		cmd, _ := handler.DecodeCommand(logEntry.Data())
 		r := "ERR_NOT_FOUND\r\n"
 		val, ok := m[cmd.Key]
@@ -108,9 +108,12 @@ func Initialize(ch chan LogEntry) { //	This channel has to be of type MyLogEntry
 		}
 		
 		// Send response to appropriate handler's channel
-		ResponseChannelStore.RLock()
+		ResponseChannelStore.Lock()
 		responseChannel := ResponseChannelStore.m[logEntry.Lsn()]
-		ResponseChannelStore.RUnlock()
+		
+		//Delete the entry for response channel handle
+		delete(ResponseChannelStore.m, logEntry.Lsn())
+		ResponseChannelStore.Unlock()
 		*responseChannel <- r	
 	}
 }
