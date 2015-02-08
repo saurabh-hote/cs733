@@ -4,8 +4,8 @@ import (
 	"container/heap"
 	"fmt"
 	handler "github.com/swapniel99/cs733-raft/handler"
-	"time"
 	"log"
+	"time"
 )
 
 type command handler.Command
@@ -18,13 +18,14 @@ type value struct {
 }
 
 //Map Manager
-func InitializeKVStore(ch *chan LogEntry) { //	This channel has to be of type MyLogEntry. This is commitCh
+func InitializeKVStore(ch chan LogEntry) { //	This channel has to be of type MyLogEntry. This is commitCh
 	//The map which actually stores values
 	m := make(map[string]value)
 	h := &nodeHeap{}
 	var counter uint64 = 0
-	go cleaner(1, *ch)
-	for logEntry := range *ch {
+	go cleaner(1, ch)
+	for {
+		logEntry := <-ch
 		cmd, _ := handler.DecodeCommand(logEntry.Data())
 		r := "ERR_NOT_FOUND\r\n"
 		val, ok := m[cmd.Key]
@@ -106,15 +107,23 @@ func InitializeKVStore(ch *chan LogEntry) { //	This channel has to be of type My
 				r = "ERR_INTERNAL\r\n"
 			}
 		}
-		
-		// Send response to appropriate handler's channel
-		ResponseChannelStore.Lock()
-		responseChannel := ResponseChannelStore.m[logEntry.Lsn()]
-		
-		//Delete the entry for response channel handle
-		delete(ResponseChannelStore.m, logEntry.Lsn())
-		ResponseChannelStore.Unlock()
-		*responseChannel <- r	
+
+		if cmd.Action != handler.Cleanup {
+			// Send response to appropriate handler's channel
+			ResponseChannelStore.RLock()
+			responseChannel := ResponseChannelStore.m[logEntry.Lsn()]
+			ResponseChannelStore.RUnlock()
+
+			if responseChannel == nil {
+				log.Println("KVStore: Response channel for LogEntry not found")
+			} else {
+				//Delete the entry for response channel handle
+				ResponseChannelStore.Lock()
+				delete(ResponseChannelStore.m, logEntry.Lsn())
+				ResponseChannelStore.Unlock()
+				*responseChannel <- r
+			}
+		}
 	}
 }
 
@@ -125,7 +134,7 @@ func cleaner(interval int, ch chan<- LogEntry) {
 		data, err := handler.EncodeCommand(command)
 		if err != nil {
 			log.Println("Error encoding the command ", err.Error())
-			}
+		}
 		ch <- &MyLogEntry{0, data, false}
 	}
 }

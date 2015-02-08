@@ -35,8 +35,8 @@ func main() {
 	}
 	log.Println("Starting sevrer with ID ", *serverIdPtr)
 
-	var ch chan raft.LogEntry
-	raftInstance, err := raft.NewRaft(clusterConfig, *serverIdPtr, ch)
+	commitCh := make(chan raft.LogEntry, 10000)
+	raftInstance, err := raft.NewRaft(clusterConfig, *serverIdPtr, commitCh)
 	if err != nil {
 		log.Println("Error creating server instance : ", err.Error())
 	}
@@ -62,7 +62,7 @@ func main() {
 	}
 
 	//Inititialize the KV Store Module
-	go raft.InitializeKVStore(&raftInstance.CommitCh)
+	go raft.InitializeKVStore(raftInstance.CommitCh)
 
 	//Now start the SharedLog module
 	raftInstance.StartServer()

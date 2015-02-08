@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
+	"sync"
 	"io/ioutil"
 	"log"
 	"os"
@@ -41,11 +41,13 @@ func main() {
 
 	serverReplicas := 5
 	programName := "server.go"
+	var wg sync.WaitGroup
 	index := 1
 	for index <= serverReplicas {
 		constIndex := index
-
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			cmd := exec.Command("go", "run", programName, "-id="+strconv.Itoa(constIndex))
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
@@ -56,5 +58,5 @@ func main() {
 		}()
 		index++
 	}
-	fmt.Scanln()
+	wg.Wait()
 }

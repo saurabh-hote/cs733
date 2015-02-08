@@ -3,9 +3,11 @@ package raft
 import (
 	handler "github.com/swapniel99/cs733-raft/handler"
 	"log"
+	"net"
 	"net/rpc"
 	"strconv"
 	"sync"
+	"encoding/gob"
 )
 
 const (
@@ -85,27 +87,28 @@ func (e ErrRedirect) Error() string {
 
 //LogEntry interface implementation
 type MyLogEntry struct {
-	lsn       Lsn
-	data      []byte
-	committed bool
+	LogSeqNumber       Lsn
+	DataBytes      []byte
+	EntryCommitted bool
 }
 
 func (entry MyLogEntry) Lsn() Lsn {
-	return entry.lsn
+	return entry.LogSeqNumber
 }
 
 func (entry MyLogEntry) Data() []byte {
-	return entry.data
+	return entry.DataBytes
 }
 
 func (entry MyLogEntry) Committed() bool {
-	return entry.committed
+	return entry.EntryCommitted
 }
 
 func (raft *Raft) Append(data []byte) (LogEntry, error) {
 	if len(data) > 0 {
 		raft.CurrentLsn++
-		logEntry := MyLogEntry{raft.CurrentLsn, data, false}
+		var logEntry LogEntry
+		logEntry = MyLogEntry{raft.CurrentLsn, data, false}
 		raft.LogEntryBuffer = append(raft.LogEntryBuffer, logEntry)
 		return logEntry, nil
 	} else {
@@ -116,10 +119,10 @@ func (raft *Raft) Append(data []byte) (LogEntry, error) {
 //This struct will be sent as RPC message between the replicas
 type RPCMessage struct {
 	//TODO: add Term and previosLeaderLogTerm later
-	logEntry                     LogEntry
-	leaderID                     int //TODO: to be implemented later
-	leaderCommitIndex            Lsn
-	previousLeaderSharedLogIndex Lsn
+	LogEntry                     LogEntry
+	LeaderID                     int //TODO: to be implemented later
+	LeaderCommitIndex            Lsn
+	PreviousLeaderSharedLogIndex Lsn
 }
 
 var ResponseChannelStore = struct {
@@ -164,21 +167,21 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 			continue
 		}
 		//Make RPC call on  server.LogPort in a seperate go routine
-		//go func() {
-		remoteServer, err := rpc.Dial("tcp", server.Hostname+":"+strconv.Itoa(server.LogPort))
-		if err != nil {
-			log.Println("Dialing: ", err)
-		} else {
-
-			// Synchronous call
-			var reply bool
-			err = remoteServer.Call("Raft.AppendEntriesRPC", message, &reply)
+		go func() {
+			remoteServer, err := rpc.Dial("tcp", server.Hostname+":"+strconv.Itoa(server.LogPort))
 			if err != nil {
-				log.Println("RPC call: ", err)
+				log.Println("Error Dialing: ", err)
+			} else {
+
+				// Synchronous call
+				var reply bool
+				err = remoteServer.Call("Raft.AppendEntriesRPC", message, &reply)
+				if err != nil {
+					log.Println("Error RPC call: ", err)
+				}
+				done <- reply
 			}
-			done <- reply
-		}
-		//	}()
+		}()
 	}
 
 	//TODO: need to rectify the design as the go routine would block if it does not receive sufficeint acks
@@ -194,7 +197,11 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 func (raft *Raft) StartServer() {
 	log.Println("Started raft")
 	//register for RPC
-	rpc.Register(*raft)
+	rpc.Register(raft)
+	gob.Register(MyLogEntry{})
+	
+	//start listening for RPC connections
+	go raft.startRPCListener()
 
 	//now start listening on the input channel from the connection handler for new append requests
 	var message handler.AppendRequestMessage
@@ -217,8 +224,6 @@ func (raft *Raft) StartServer() {
 		rpcMessage := &RPCMessage{logEntry, raft.ServerID, raft.LeaderCommitIndex,
 			raft.LogEntryBuffer[len(raft.LogEntryBuffer)-1].Lsn()}
 		if raft.BroadcastMessageToReplicas(rpcMessage) {
-
-			log.Println("Received Consensus..!!")
 			raft.CommitCh <- logEntry
 
 			//TODO: commit the log entry
@@ -228,5 +233,27 @@ func (raft *Raft) StartServer() {
 
 		}
 
+	}
+}
+
+func (raft *Raft) startRPCListener() {
+	var logPort int
+	for _, server := range raft.ClusterConfig.Servers {
+		if server.Id == raft.ServerID {
+			logPort = server.LogPort
+		}
+	}
+	listener, e := net.Listen("tcp", ":"+strconv.Itoa(logPort))
+	if e != nil {
+		log.Fatal("Error starting RPC Listener: ", e.Error())
+	}
+
+	for {
+		if conn, err := listener.Accept(); err != nil {
+			log.Fatal("RPC connection accept error: " + err.Error())
+		} else {
+			log.Printf("New RPC connection accepted: ", conn.RemoteAddr().String())
+			go rpc.ServeConn(conn)
+		}
 	}
 }
