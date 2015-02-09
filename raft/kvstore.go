@@ -93,7 +93,6 @@ func InitializeKVStore(ch chan LogEntry) { //	This channel has to be of type MyL
 			}
 		case handler.Cleanup:
 			{
-				log.Println("Executing cleanup of expired entries")
 				t := time.Now().Unix()
 				for (*h).Len() != 0 && (*h)[0].expiry <= t {
 					root := heap.Pop(h).(node)

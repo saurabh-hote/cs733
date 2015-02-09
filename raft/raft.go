@@ -77,7 +77,6 @@ func NewRaft(config *ClusterConfig, thisServerId int, commitCh chan LogEntry) (*
 	raft.CommitCh = commitCh
 	raft.AppendRequestChannel = make(chan handler.AppendRequestMessage)
 	raft.LogEntryBuffer = make([]LogEntry, 0)
-	raft.LeaderID = 1 //TODO: need to update this with Leader election
 	return raft, nil
 }
 
@@ -205,7 +204,6 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 }
 
 func (raft *Raft) StartServer() {
-	log.Println("Started raft")
 	//register for RPC
 	rpc.Register(raft)
 	gob.Register(LogEntryObj{})
@@ -273,7 +271,7 @@ func (raft *Raft) startRPCListener() {
 		if conn, err := listener.Accept(); err != nil {
 			log.Fatal("RPC connection accept error: " + err.Error())
 		} else {
-			log.Printf("New RPC connection accepted: ", conn.RemoteAddr().String())
+			log.Printf("New RPC connection accepted: " + conn.RemoteAddr().String())
 			go rpc.ServeConn(conn)
 		}
 	}
