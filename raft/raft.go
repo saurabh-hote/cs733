@@ -160,19 +160,24 @@ func (raft *Raft) AppendEntriesRPC(message *RPCMessage, reply *bool) error {
 
 func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 	var ackCountPtr uint32
-	var totalWaitTime time.Duration
+//	var totalWaitTime time.Duration
 	const sleepDuration = 100 * time.Millisecond
 	const timeOutDuration = 1 * time.Second
+	done := make(chan bool)
 
-	for ackCountPtr < uint32(len(raft.ClusterConfig.Servers)/2) {
+	for {
+		ackCountPtr = 0
 		for _, server := range raft.ClusterConfig.Servers {
 			//Skip RPC to self
 			if server.Id == raft.ServerID {
 				continue
 			}
+			serverIP := server.Hostname
+			serverLogPort := server.LogPort
+			
 			//Make RPC call on  server.LogPort in a seperate go routine
 			go func() {
-				remoteServer, err := rpc.Dial("tcp", server.Hostname+":"+strconv.Itoa(server.LogPort))
+				remoteServer, err := rpc.Dial("tcp", serverIP + ":" + strconv.Itoa(serverLogPort))
 				if err != nil {
 					log.Println("Error Dialing: ", err)
 				} else {
@@ -186,19 +191,33 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 						atomic.AddUint32(&ackCountPtr, 1)
 					}
 				}
+				done <- true
 			}()
 		}
 
+		//Wait for termination of all the routines
+		for index := 0; index < (len(raft.ClusterConfig.Servers) - 1); index++ {
+			<-done
+		}
+
+		//Check if ACK is received from all the replicas
+		if ackCountPtr == uint32(len(raft.ClusterConfig.Servers)-1) {
+			//wait for some duration before making new RPC broadcast request
+			time.Sleep(timeOutDuration)
+			break
+		}
+		/*		
 		//TODO: need to rectify the design as the go routine would block if it does not receive sufficeint acks
 		totalWaitTime = 0
 		for {
-			if ackCountPtr < uint32(len(raft.ClusterConfig.Servers)/2) && totalWaitTime < timeOutDuration {
+			if ackCountPtr < uint32(len(raft.ClusterConfig.Servers)-1) && totalWaitTime < timeOutDuration {
 				time.Sleep(sleepDuration)
 				totalWaitTime += sleepDuration
 			} else {
 				break
 			}
 		}
+		*/
 	}
 	return true
 }
@@ -224,7 +243,7 @@ func (raft *Raft) StartServer() {
 				}
 			}
 			*message.ResponseChannel <- "ERR_REDIRECT " + leaderConfig.Hostname + " " + strconv.Itoa(leaderConfig.ClientPort) + "\r\n"
-			
+
 		} else {
 
 			logEntry, err := raft.Append(message.Data)
