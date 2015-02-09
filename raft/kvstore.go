@@ -58,9 +58,6 @@ func InitializeKVStore(ch chan LogEntry) { //	This channel has to be of type MyL
 					if t != 0 {
 						t = val.expiry - time.Now().Unix() // remaining time
 					}
-					if t < 0 {
-						t = 0
-					}
 					r = fmt.Sprintf("VALUE %v %v %v\r\n"+string(val.data)+"\r\n", val.version, t, val.numbytes)
 				}
 			}

@@ -16,10 +16,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"math/rand"
 )
 
 var cmdObjects = make([]*exec.Cmd, 0)
 var clusterConfig *raft.ClusterConfig
+const noOfClientThreads int = 200
+const noOfRequestsPerThread int = 10
 
 func init() {
 	var cmdChannel = make(chan *exec.Cmd, 1)
@@ -61,59 +64,85 @@ func init() {
 	time.Sleep(waitTimeForServerReplicaStart)
 }
 
-func TestSet(t *testing.T) {
-	log.Println("Executing TestSet")
+/*
+Test for checking the the correct version
+The test execytes multiple set commands and then checks for the correct version on getm execute
+*/
+func TestEntryVersion(t *testing.T) {
+	//start the server
+	//go main()
 
-	numberOfClientThreads := 10
+	commands := []string {
+		"set saurabh 60 7\r\nHoteABC\r\n",
+		"set saurabh 60 7\r\nHotePQR\r\n",
+	}
+	deleteCommand := "delete saurabh\r\n"
+	verifyCommand := "getm saurabh\r\n"
 
-	ch := make(chan int, 1)
+	done := make(chan bool)
 
-	for i := 0; i < numberOfClientThreads; i++ {
-		go launchClient(t, ch)
+	//delete the key to test
+	if executeDelete(t, deleteCommand) {
+		t.Error("Error executing command " + deleteCommand)
 	}
 
-	OkResponses := 0
-	for i := 0; i < numberOfClientThreads; i++ {
-		OkResponses += <-ch
+	//spwan client threads
+	connectionCounter := 0
+	for connectionCounter < noOfClientThreads {
+		go executeCommands(t, done, commands, 0)
+		connectionCounter += 1
 	}
-	if OkResponses == numberOfClientThreads {
-		log.Println("TestSet passed.")
+	connectionCounter = 0
+
+	for connectionCounter < noOfClientThreads {
+		<-done
+		connectionCounter += 1
+	}
+
+	//now verify the version
+	versionReceived := executeGetMForVersion(t, verifyCommand)
+	versionReceived++ //since the versioning starts from 0
+	if noOfClientThreads*noOfRequestsPerThread == int(versionReceived) {
+		log.Println("TestVersionMatch Passed.")
 	} else {
-		t.Error("Expected 'OK 100' but recieved OK ", OkResponses)
+		t.Error("TestVersionMatch Failed. Expected " + strconv.Itoa(noOfClientThreads*noOfRequestsPerThread) + " received " + strconv.FormatInt(versionReceived, 10))
 	}
 }
 
-//client code for cheking multiple clients setting same key
-//expects final version to be number of clients setting that key
-func launchClient(t *testing.T, ch chan int) {
-	// connect to the server
-	conn, err := net.Dial("tcp", (*clusterConfig).Servers[0].Hostname + ":" + strconv.Itoa((*clusterConfig).Servers[0].ClientPort))
-	//conn, err := net.Dial("tcp", "localhost:5001")
-	if err != nil {
-		conn.Close()
+/*
+Test for concurrency
+The test executes multiple commands concurrently 
+*/
+func TestConcurrency(t *testing.T) {
+	//start the server
+	//go main()
+
+	commands := []string {
+		"set saurabh 60 7\r\nHoteABC\r\n",
+		"set ganesh 60 2\r\nAA\r\n",
+		"cas saurabh 60 1 7\r\nHotePQR\r\n",
+		"set saurabh 60 7\r\nHotePQR\r\n",
+		"delete saurabh\r\n",
+		"delete ganesh\r\n",
+		"getm ganesh\r\n",
+		"getm saurabh\r\n",
 	}
 
-	msg := "set rdg 30 2\r\nrt\r\n"
-	io.Copy(conn, bytes.NewBufferString(msg))
-	if err != nil {
-		conn.Close()
-	}
-	//log.Println("sent ", msg)
+	done := make(chan bool)
 
-	//reading server response
-	resp, err := bufio.NewReader(conn).ReadString('\n')
-	if err != nil {
-		conn.Close()
-	} else {
-		//log.Println(ts(resp))
-		if strings.Contains(strings.TrimSpace(resp), "OK") {
-			ch <- 1
-		} else {
-			ch <- 0
-		}
-
+	//spwan client threads
+	connectionCounter := 0
+	for connectionCounter < noOfClientThreads {
+		go executeCommands(t, done, commands, 0)
+		connectionCounter += 1
 	}
-	conn.Close()
+	connectionCounter = 0
+
+	for connectionCounter < noOfClientThreads {
+		<-done
+		connectionCounter += 1
+	}
+	log.Println("TestConcurrency Passed.")
 }
 
 func TestKillServers(t *testing.T) {
@@ -129,5 +158,122 @@ func TestKillServers(t *testing.T) {
 		exec.Command("taskkill", "/IM", "server.exe", "/F").Run()
 	} else {
 		exec.Command("pkill", "server").Run()
+	}
+}
+
+//Miscellaneous functions
+func executeCommands(t *testing.T, done chan bool, commands []string, execCount int) bool {
+	conn, err := net.Dial("tcp", (*clusterConfig).Servers[0].Hostname + ":" + strconv.Itoa((*clusterConfig).Servers[0].ClientPort))
+	log.Println("Conencted ")
+	if err != nil {
+		t.Error(err)
+		done <- false
+		return false
+	}
+
+	connbuf := bufio.NewReader(conn)
+	randomGenerator := rand.New(rand.NewSource(time.Now().UnixNano()))
+	var line []byte
+	result := true
+	executionCount := noOfRequestsPerThread
+	if execCount > 0 {
+		executionCount = execCount
+	}
+
+	j := 0
+	for j < executionCount {
+		commandIndex := randomGenerator.Int() % len(commands)
+		io.Copy(conn, bytes.NewBufferString(commands[commandIndex]))
+		log.Println("sent ", commands[commandIndex])
+
+		if !strings.HasSuffix(strings.Split(commands[commandIndex], "\r\n")[0], "noreply") {
+
+			line, err = connbuf.ReadBytes('\n')
+			input := strings.TrimRight(string(line), "\r\n")
+			log.Println("received ", input)
+			array := strings.Split(input, " ")
+
+			if array[0] == "VALUE" {
+				line, err = connbuf.ReadBytes('\n')
+				input = strings.TrimRight(string(line), "\r\n")
+				log.Println(input)
+
+				if err != nil {
+					result = false
+					break
+				}
+			} else if array[0] != "OK" {
+				result = false
+				break
+			}
+		}
+		j += 1
+	}
+
+	if err != nil {
+		t.Error(err)
+	} 
+	done <- result
+	conn.Close()
+	return result
+}
+
+func executeGetMForVersion(t *testing.T, command string) int64 {
+	var version int64
+	conn, err := net.Dial("tcp", (*clusterConfig).Servers[0].Hostname + ":" + strconv.Itoa((*clusterConfig).Servers[0].ClientPort))
+	if err != nil {
+		t.Error(err)
+		return -1
+	}
+
+	connbuf := bufio.NewReader(conn)
+	io.Copy(conn, bytes.NewBufferString(command))
+	log.Println("sent ", command)
+
+	line, _ := connbuf.ReadBytes('\n')
+	input := strings.TrimRight(string(line), "\r\n")
+	log.Println("received ", input)
+
+	array := strings.Split(input, " ")
+	result := array[0]
+	if result == "VALUE" {
+		line, err = connbuf.ReadBytes('\n')
+		version, _ = strconv.ParseInt(array[1], 10, 64)
+		if err != nil {
+			version = -1
+		}
+	} else {
+		version = -1
+	}
+
+	if err != nil {
+		t.Error(err)
+	}
+	conn.Close()
+	return version
+}
+
+func executeDelete(t *testing.T, command string) bool {
+	conn, err := net.Dial("tcp", (*clusterConfig).Servers[0].Hostname + ":" + strconv.Itoa((*clusterConfig).Servers[0].ClientPort))
+	if err != nil {
+		t.Error(err)
+		return false
+	}
+
+	connbuf := bufio.NewReader(conn)
+	io.Copy(conn, bytes.NewBufferString(command))
+	log.Println("sent ", command)
+
+	line, _ := connbuf.ReadBytes('\n')
+	input := strings.TrimRight(string(line), "\r\n")
+	log.Println("received ", input)
+	conn.Close()
+
+	if input == "DELETED" {
+		t.Skip("Delete Passed")
+		return true
+
+	} else {
+		return false
 	}
 }
