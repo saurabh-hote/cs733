@@ -37,8 +37,7 @@ func init() {
 	data, _ := json.Marshal(*clusterConfig)
 	ioutil.WriteFile("config.json", data, 0644)
 
-//	serverReplicas := len((*clusterConfig).Servers)
-	serverReplicas := 2
+	serverReplicas := len((*clusterConfig).Servers)
 	programName := "server.go"
 	index := 1
 	for index <= serverReplicas {
