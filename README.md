@@ -10,14 +10,17 @@ This piece of work is an implementation of RAFT protocol. The reference paper ca
 
 # Team Members
 Saurabh Hote 13305R008
+
 Swapnil Gusani 133050001
+
 Ramesh Gaikwad 13305R011
 
 # Instructions: How to run
-1.Clone the project using:
-	git clone git@github.com:swapniel99/cs733-raft.git
-2.Run the test script using following commands:
-	cd cs733-raft
-	go test
+1.Clone the project using:	git clone git@github.com:swapniel99/cs733-raft.git
+
+2.Change directory to cs733-raft : cd cs733-raft
+
+3.Run the test script using following commands: go test
 
 Thank you!
+ 
