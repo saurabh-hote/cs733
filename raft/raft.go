@@ -1,13 +1,16 @@
 package raft
 
 import (
+	"encoding/gob"
 	handler "github.com/swapniel99/cs733-raft/handler"
 	"log"
 	"net"
 	"net/rpc"
 	"strconv"
 	"sync"
-	"encoding/gob"
+	"sync/atomic"
+	"time"
+	//	"math"
 )
 
 const (
@@ -49,21 +52,18 @@ type ClusterConfig struct {
 
 // Raft implements the SharedLog interface.
 type Raft struct {
-	ClusterConfig     *ClusterConfig
-	ServerID          int
-	CommitCh          chan LogEntry
-	CommitIndex       Lsn
-	LeaderCommitIndex Lsn
+	ClusterConfig        *ClusterConfig
+	ServerID             int
+	CommitCh             chan LogEntry
+	CommitIndex          Lsn
+	LeaderCommitIndex    Lsn
+	LeaderID             int
+	CurrentState         int                               //state of the server
+	AppendRequestChannel chan handler.AppendRequestMessage //channel for receving append requests
 
 	//entries for implementing Shared Log
 	LogEntryBuffer []LogEntry
 	CurrentLsn     Lsn
-
-	//channel for receving append requests
-	AppendRequestChannel chan handler.AppendRequestMessage
-
-	//state of the server
-	CurrentState int
 }
 
 // Creates a raft object. This implements the SharedLog interface.
@@ -77,6 +77,7 @@ func NewRaft(config *ClusterConfig, thisServerId int, commitCh chan LogEntry) (*
 	raft.CommitCh = commitCh
 	raft.AppendRequestChannel = make(chan handler.AppendRequestMessage)
 	raft.LogEntryBuffer = make([]LogEntry, 0)
+	raft.LeaderID = 1 //TODO: need to update this with Leader election
 	return raft, nil
 }
 
@@ -86,21 +87,21 @@ func (e ErrRedirect) Error() string {
 }
 
 //LogEntry interface implementation
-type MyLogEntry struct {
-	LogSeqNumber       Lsn
+type LogEntryObj struct {
+	LogSeqNumber   Lsn
 	DataBytes      []byte
 	EntryCommitted bool
 }
 
-func (entry MyLogEntry) Lsn() Lsn {
+func (entry LogEntryObj) Lsn() Lsn {
 	return entry.LogSeqNumber
 }
 
-func (entry MyLogEntry) Data() []byte {
+func (entry LogEntryObj) Data() []byte {
 	return entry.DataBytes
 }
 
-func (entry MyLogEntry) Committed() bool {
+func (entry LogEntryObj) Committed() bool {
 	return entry.EntryCommitted
 }
 
@@ -108,7 +109,7 @@ func (raft *Raft) Append(data []byte) (LogEntry, error) {
 	if len(data) > 0 {
 		raft.CurrentLsn++
 		var logEntry LogEntry
-		logEntry = MyLogEntry{raft.CurrentLsn, data, false}
+		logEntry = LogEntryObj{raft.CurrentLsn, data, false}
 		raft.LogEntryBuffer = append(raft.LogEntryBuffer, logEntry)
 		return logEntry, nil
 	} else {
@@ -122,7 +123,7 @@ type RPCMessage struct {
 	LogEntry                     LogEntry
 	LeaderID                     int //TODO: to be implemented later
 	LeaderCommitIndex            Lsn
-	PreviousLeaderSharedLogIndex Lsn
+	LeaderPreviousSharedLogIndex Lsn
 }
 
 var ResponseChannelStore = struct {
@@ -137,7 +138,7 @@ func (raft *Raft) AppendEntriesRPC(message *RPCMessage, reply *bool) error {
 		//case 1 - term is less than cyurrent term //TODO: to be implemented
 
 		//case 2 - if follower contains entry @ previousLeaderLogIndex with same term then OK
-		if raft.LogEntryBuffer[len(raft.LogEntryBuffer)-1].Lsn() >= message.previousLeaderSharedLogIndex {
+		if raft.LogEntryBuffer[len(raft.LogEntryBuffer)-1].Lsn() >= message.LeaderPreviousSharedLogIndex {
 			*reply = false
 			return nil
 		}
@@ -146,11 +147,11 @@ func (raft *Raft) AppendEntriesRPC(message *RPCMessage, reply *bool) error {
 
 		//now append the new entry received
 		raft.CurrentLsn++
-		raft.LogEntryBuffer = append(raft.LogEntryBuffer, message.logEntry)
+		raft.LogEntryBuffer = append(raft.LogEntryBuffer, message.LogEntry)
 
 		//case 4 - if leaderCommitIndex > commitIndex then set commitIndex = min(leaderCommitIndex, raft.currentLsn)
-		if message.leaderCommitIndex > raft.CommitIndex {
-			raft.CommitIndex = Lsn(math.Min(float64(message.leaderCommitIndex), float64(raft.CurrentLsn)))
+		if message.LeaderCommitIndex > raft.CommitIndex {
+			raft.CommitIndex = Lsn(math.Min(float64(message.LeaderCommitIndex), float64(raft.CurrentLsn)))
 		}
 	*/
 
@@ -159,36 +160,45 @@ func (raft *Raft) AppendEntriesRPC(message *RPCMessage, reply *bool) error {
 }
 
 func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
-	//TODO: contact all the replicas
-	done := make(chan bool)
+	var ackCountPtr uint32
+	var totalWaitTime time.Duration
+	const sleepDuration = 100 * time.Millisecond
+	const timeOutDuration = 1 * time.Second
 
-	for _, server := range raft.ClusterConfig.Servers {
-		if server.Id == raft.ServerID {
-			continue
-		}
-		//Make RPC call on  server.LogPort in a seperate go routine
-		go func() {
-			remoteServer, err := rpc.Dial("tcp", server.Hostname+":"+strconv.Itoa(server.LogPort))
-			if err != nil {
-				log.Println("Error Dialing: ", err)
-			} else {
-
-				// Synchronous call
-				var reply bool
-				err = remoteServer.Call("Raft.AppendEntriesRPC", message, &reply)
-				if err != nil {
-					log.Println("Error RPC call: ", err)
-				}
-				done <- reply
+	for ackCountPtr < uint32(len(raft.ClusterConfig.Servers)/2) {
+		for _, server := range raft.ClusterConfig.Servers {
+			//Skip RPC to self
+			if server.Id == raft.ServerID {
+				continue
 			}
-		}()
-	}
+			//Make RPC call on  server.LogPort in a seperate go routine
+			go func() {
+				remoteServer, err := rpc.Dial("tcp", server.Hostname+":"+strconv.Itoa(server.LogPort))
+				if err != nil {
+					log.Println("Error Dialing: ", err)
+				} else {
 
-	//TODO: need to rectify the design as the go routine would block if it does not receive sufficeint acks
-	ackCount := 0
-	for ackCount < (len(raft.ClusterConfig.Servers) / 2) {
-		if <-done {
-			ackCount += 1
+					// Synchronous call
+					var reply bool
+					err = remoteServer.Call("Raft.AppendEntriesRPC", message, &reply)
+					if err != nil {
+						log.Println("Error RPC call: ", err)
+					} else {
+						atomic.AddUint32(&ackCountPtr, 1)
+					}
+				}
+			}()
+		}
+
+		//TODO: need to rectify the design as the go routine would block if it does not receive sufficeint acks
+		totalWaitTime = 0
+		for {
+			if ackCountPtr < uint32(len(raft.ClusterConfig.Servers)/2) && totalWaitTime < timeOutDuration {
+				time.Sleep(sleepDuration)
+				totalWaitTime += sleepDuration
+			} else {
+				break
+			}
 		}
 	}
 	return true
@@ -198,8 +208,8 @@ func (raft *Raft) StartServer() {
 	log.Println("Started raft")
 	//register for RPC
 	rpc.Register(raft)
-	gob.Register(MyLogEntry{})
-	
+	gob.Register(LogEntryObj{})
+
 	//start listening for RPC connections
 	go raft.startRPCListener()
 
@@ -208,31 +218,42 @@ func (raft *Raft) StartServer() {
 	for {
 		message = <-raft.AppendRequestChannel
 
-		logEntry, err := raft.Append(message.Data)
-		if err != nil {
-			//TODO: this case would never happen
-			*message.ResponseChannel <- "ERR_APPEND"
-			continue
+		if raft.CurrentState != LEADER {
+			leaderConfig := raft.ClusterConfig.Servers[0]
+			for _, server := range raft.ClusterConfig.Servers {
+				if server.Id == raft.LeaderID {
+					leaderConfig = server
+				}
+			}
+			*message.ResponseChannel <- "ERR_REDIRECT " + leaderConfig.Hostname + " " + strconv.Itoa(leaderConfig.ClientPort) + "\r\n"
+			
+		} else {
+
+			logEntry, err := raft.Append(message.Data)
+			if err != nil {
+				//TODO: this case would never happen
+				*message.ResponseChannel <- "ERR_APPEND"
+				continue
+			}
+
+			//put entry in the global map
+			ResponseChannelStore.Lock()
+			ResponseChannelStore.m[logEntry.Lsn()] = message.ResponseChannel
+			ResponseChannelStore.Unlock()
+
+			//now check for consensus
+			rpcMessage := &RPCMessage{logEntry, raft.ServerID, raft.LeaderCommitIndex,
+				raft.LogEntryBuffer[len(raft.LogEntryBuffer)-1].Lsn()}
+			if raft.BroadcastMessageToReplicas(rpcMessage) {
+				//TODO: commit the log entry - write to disk
+
+				//Now send the entry to KV store
+				raft.CommitCh <- logEntry
+				//update the commit index
+				raft.CommitIndex++
+				raft.LeaderCommitIndex = raft.CommitIndex
+			}
 		}
-
-		//put entry in the global map
-		ResponseChannelStore.Lock()
-		ResponseChannelStore.m[logEntry.Lsn()] = message.ResponseChannel
-		ResponseChannelStore.Unlock()
-
-		//now check for consensus
-		rpcMessage := &RPCMessage{logEntry, raft.ServerID, raft.LeaderCommitIndex,
-			raft.LogEntryBuffer[len(raft.LogEntryBuffer)-1].Lsn()}
-		if raft.BroadcastMessageToReplicas(rpcMessage) {
-			raft.CommitCh <- logEntry
-
-			//TODO: commit the log entry
-			//write to disk
-
-			//update the commit index
-
-		}
-
 	}
 }
 

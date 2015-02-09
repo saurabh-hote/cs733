@@ -21,7 +21,7 @@ func ReadConfig(path string) (*raft.ClusterConfig, error) {
 
 func main() {
 	//TODO: Read the config.json file to get all the server configurations
-	clusterConfig, err := ReadConfig("G:/Workspace/Workspace-CS733/RAFT/src/github.com/swapniel99/cs733-raft/config.json")
+	clusterConfig, err := ReadConfig("config.json")
 	if err != nil {
 		log.Println("Error parsing config file : ", err.Error())
 	}
@@ -67,5 +67,5 @@ func main() {
 	//Now start the SharedLog module
 	raftInstance.StartServer()
 	
-	log.Println("Started raft Instance")
+	log.Println("Started raft Instance for server ID ", raftInstance.ServerID)
 }

@@ -39,7 +39,7 @@ func main() {
 	data, _ := json.Marshal(clusterConfig)
 	ioutil.WriteFile("config.json", data, 0644)
 
-	serverReplicas := 5
+	serverReplicas := len(clusterConfig.Servers)
 	programName := "server.go"
 	var wg sync.WaitGroup
 	index := 1

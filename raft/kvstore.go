@@ -23,7 +23,8 @@ func InitializeKVStore(ch chan LogEntry) { //	This channel has to be of type MyL
 	m := make(map[string]value)
 	h := &nodeHeap{}
 	var counter uint64 = 0
-	go cleaner(1, ch)
+	const heapCleanupInterval = 60
+	go cleaner(heapCleanupInterval, ch)
 	for {
 		logEntry := <-ch
 		cmd, _ := handler.DecodeCommand(logEntry.Data())
@@ -92,6 +93,7 @@ func InitializeKVStore(ch chan LogEntry) { //	This channel has to be of type MyL
 			}
 		case handler.Cleanup:
 			{
+				log.Println("Executing cleanup of expired entries")
 				t := time.Now().Unix()
 				for (*h).Len() != 0 && (*h)[0].expiry <= t {
 					root := heap.Pop(h).(node)
@@ -127,14 +129,15 @@ func InitializeKVStore(ch chan LogEntry) { //	This channel has to be of type MyL
 	}
 }
 
-func cleaner(interval int, ch chan<- LogEntry) {
+func cleaner(interval int, ch chan LogEntry) {
 	command := handler.Command{handler.Cleanup, "", 0, 0, 0, nil}
-	for {
-		time.Sleep(time.Duration(interval) * time.Second)
-		data, err := handler.EncodeCommand(command)
-		if err != nil {
-			log.Println("Error encoding the command ", err.Error())
-		}
-		ch <- &MyLogEntry{0, data, false}
+	data, err := handler.EncodeCommand(command)
+	logEntry := LogEntryObj{0, data, false}
+	if err != nil {
+		log.Println("Error encoding the command ", err.Error())
+	}
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
+	for range ticker.C {
+		ch <- logEntry
 	}
 }
