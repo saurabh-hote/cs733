@@ -4,63 +4,42 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	raft "github.com/swapniel99/cs733-raft/raft"
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
-var ts = strings.TrimSpace
+var cmdObjects = make([]*exec.Cmd, 0)
+var clusterConfig *raft.ClusterConfig
 
-// Raft setup
-type ServerConfig struct {
-	Id         int    // Id of server. Must be unique
-	Hostname   string // name or ip of host
-	ClientPort int    // port at which server listens to client messages.
-	LogPort    int    // tcp port for inter-replica protocol messages.
-}
-
-type ClusterConfig struct {
-	Path    string         // Directory for persistent log
-	Servers []ServerConfig // All servers in this cluster
-}
-
-func getClusterConfig() ClusterConfig {
-	serverConfig := []ServerConfig{
+func init() {
+	var cmdChannel = make(chan *exec.Cmd, 1)
+	serverConfig := []raft.ServerConfig{
 		{1, "localhost", 5001, 6001},
 		{2, "localhost", 5002, 6002},
 		{3, "localhost", 5003, 6003},
 		{4, "localhost", 5004, 6004},
 		{5, "localhost", 5005, 6005}}
-	clusterConfig := ClusterConfig{"/log", serverConfig}
-	return clusterConfig
-}
+	clusterConfig = &raft.ClusterConfig{"/log", serverConfig}
 
-var cmdObjects = make([]*exec.Cmd, 0)
-var cmdChannel = make(chan *exec.Cmd, 1)
-var serverReplicas int
-
-func init() {
-	clusterConfig := getClusterConfig()
-	data, _ := json.Marshal(clusterConfig)
+	data, _ := json.Marshal(*clusterConfig)
 	ioutil.WriteFile("config.json", data, 0644)
 
-	serverReplicas = len(clusterConfig.Servers)
+	serverReplicas := len((*clusterConfig).Servers)
 	programName := "server.go"
-	var wg sync.WaitGroup
 	index := 1
 	for index <= serverReplicas {
 		constIndex := index
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			cmd := exec.Command("go", "run", programName, "-id="+strconv.Itoa(constIndex))
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
@@ -75,16 +54,18 @@ func init() {
 		index++
 	}
 	log.Println("Waiting for all server instances to start.........")
-
-}
-
-func TestSet(t *testing.T) {
-	numberOfClientThreads := 100
-
 	for len(cmdObjects) < serverReplicas {
 		time.Sleep(100 * time.Millisecond)
 	}
-	time.Sleep(5000 * time.Millisecond)
+	waitTimeForServerReplicaStart := 5 * time.Second
+	time.Sleep(waitTimeForServerReplicaStart)
+}
+
+func TestSet(t *testing.T) {
+	log.Println("Executing TestSet")
+
+	numberOfClientThreads := 10
+
 	ch := make(chan int, 1)
 
 	for i := 0; i < numberOfClientThreads; i++ {
@@ -100,54 +81,53 @@ func TestSet(t *testing.T) {
 	} else {
 		t.Error("Expected 'OK 100' but recieved OK ", OkResponses)
 	}
-
-	log.Println("Waiting for all server instances to stop.........")
-	//kill server and go process
-	killServers()
 }
 
 //client code for cheking multiple clients setting same key
 //expects final version to be number of clients setting that key
 func launchClient(t *testing.T, ch chan int) {
-
 	// connect to the server
-	c, err := net.Dial("tcp", "localhost:5001")
+	conn, err := net.Dial("tcp", (*clusterConfig).Servers[0].Hostname + ":" + strconv.Itoa((*clusterConfig).Servers[0].ClientPort))
+	//conn, err := net.Dial("tcp", "localhost:5001")
 	if err != nil {
-		c.Close()
+		conn.Close()
 	}
-	// send the message
+
 	msg := "set rdg 30 2\r\nrt\r\n"
-	io.Copy(c, bytes.NewBufferString(msg))
+	io.Copy(conn, bytes.NewBufferString(msg))
 	if err != nil {
-		c.Close()
+		conn.Close()
 	}
 	//log.Println("sent ", msg)
 
 	//reading server response
-	resp, err := bufio.NewReader(c).ReadString('\n')
+	resp, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
-		c.Close()
+		conn.Close()
 	} else {
 		//log.Println(ts(resp))
-		if strings.Contains(ts(resp), "OK") {
+		if strings.Contains(strings.TrimSpace(resp), "OK") {
 			ch <- 1
 		} else {
 			ch <- 0
 		}
 
 	}
-	c.Close()
+	conn.Close()
 }
 
-func killServers() {
-	for _, server := range cmdObjects {
-		err := server.Process.Kill()
+func TestKillServers(t *testing.T) {
+	log.Println("Waiting for all server instances to stop.........")
+	for _, cmd := range cmdObjects {
+		err := cmd.Process.Kill()
 		if err != nil {
 			log.Println("go routine Killing error")
 		}
-		server.Process.Wait()
+		cmd.Process.Wait()
 	}
-	if exec.Command("pkill", "server").Run() != nil {
-		log.Println("Server Killing error")
+	if runtime.GOOS == "windows" {
+		exec.Command("taskkill", "/IM", "server.exe", "/F").Run()
+	} else {
+		exec.Command("pkill", "server").Run()
 	}
 }
