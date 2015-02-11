@@ -1,6 +1,6 @@
 # cs733-raft
 
-This piece of work is an implementation of RAFT protocol. The reference paper can be found at https://ramcloud.stanford.edu/raft.pdf
+This piece of work is an implementation of Raft protocol. The reference paper can be found at https://ramcloud.stanford.edu/raft.pdf
 
 # Features
 * The code is divided into three different modules namely the Connection_Handler, the SharedLog and the KVStore.
@@ -16,9 +16,9 @@ Swapnil Gusani 133050001
 Ramesh Gaikwad 13305R011
 
 # Instructions: How to run
-1.Clone the project using:	git clone git@github.com:swapniel99/cs733-raft.git
+1.Obtain a copy of the project using:	go get github.com/swapniel99/cs733-raft
 
-2.Change directory to cs733-raft : cd cs733-raft
+2.Change directory to cs733-raft : cd $GOPATH/src/github.com/swapniel99/cs733-raft
 
 3.Run the test script using following commands: go test
 

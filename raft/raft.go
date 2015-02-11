@@ -160,7 +160,7 @@ func (raft *Raft) AppendEntriesRPC(message *RPCMessage, reply *bool) error {
 
 func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 	var ackCountPtr uint32
-//	var totalWaitTime time.Duration
+	//	var totalWaitTime time.Duration
 	const sleepDuration = 100 * time.Millisecond
 	const timeOutDuration = 1 * time.Second
 	done := make(chan bool)
@@ -174,10 +174,10 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 			}
 			serverIP := server.Hostname
 			serverLogPort := server.LogPort
-			
+
 			//Make RPC call on  server.LogPort in a seperate go routine
 			go func() {
-				remoteServer, err := rpc.Dial("tcp", serverIP + ":" + strconv.Itoa(serverLogPort))
+				remoteServer, err := rpc.Dial("tcp", serverIP+":"+strconv.Itoa(serverLogPort))
 				if err != nil {
 					log.Println("Error Dialing: ", err)
 				} else {
@@ -191,6 +191,7 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 						atomic.AddUint32(&ackCountPtr, 1)
 					}
 				}
+				remoteServer.Close()
 				done <- true
 			}()
 		}
@@ -204,20 +205,20 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 		if ackCountPtr == uint32(len(raft.ClusterConfig.Servers)-1) {
 			break
 		}
-		
+
 		//wait for some duration before making new RPC broadcast request
-			time.Sleep(timeOutDuration)
-		/*		
-		//TODO: need to rectify the design as the go routine would block if it does not receive sufficeint acks
-		totalWaitTime = 0
-		for {
-			if ackCountPtr < uint32(len(raft.ClusterConfig.Servers)-1) && totalWaitTime < timeOutDuration {
-				time.Sleep(sleepDuration)
-				totalWaitTime += sleepDuration
-			} else {
-				break
+		time.Sleep(timeOutDuration)
+		/*
+			//TODO: need to rectify the design as the go routine would block if it does not receive sufficeint acks
+			totalWaitTime = 0
+			for {
+				if ackCountPtr < uint32(len(raft.ClusterConfig.Servers)-1) && totalWaitTime < timeOutDuration {
+					time.Sleep(sleepDuration)
+					totalWaitTime += sleepDuration
+				} else {
+					break
+				}
 			}
-		}
 		*/
 	}
 	return true

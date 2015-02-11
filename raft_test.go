@@ -21,7 +21,7 @@ import (
 
 var cmdObjects = make([]*exec.Cmd, 0)
 var clusterConfig *raft.ClusterConfig
-const noOfClientThreads int = 200
+const noOfClientThreads int = 10
 const noOfRequestsPerThread int = 10
 
 func init() {
