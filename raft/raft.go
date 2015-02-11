@@ -202,10 +202,11 @@ func (raft *Raft) BroadcastMessageToReplicas(message *RPCMessage) bool {
 
 		//Check if ACK is received from all the replicas
 		if ackCountPtr == uint32(len(raft.ClusterConfig.Servers)-1) {
-			//wait for some duration before making new RPC broadcast request
-			time.Sleep(timeOutDuration)
 			break
 		}
+		
+		//wait for some duration before making new RPC broadcast request
+			time.Sleep(timeOutDuration)
 		/*		
 		//TODO: need to rectify the design as the go routine would block if it does not receive sufficeint acks
 		totalWaitTime = 0
