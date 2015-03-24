@@ -3,7 +3,7 @@ package raft
 import (
 	"container/heap"
 	"fmt"
-	handler "github.com/swapniel99/cs733-raft/handler"
+	handler "github.com/saurabh-hote/cs733/handler"
 	"log"
 	"time"
 )

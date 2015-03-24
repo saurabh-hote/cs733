@@ -2,7 +2,7 @@ package raft
 
 import (
 	"encoding/gob"
-	handler "github.com/swapniel99/cs733-raft/handler"
+	handler "github.com/saurabh-hote/cs733/handler"
 	"log"
 	"net"
 	"net/rpc"

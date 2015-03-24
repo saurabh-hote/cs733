@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	handler "github.com/swapniel99/cs733-raft/handler"
-	raft "github.com/swapniel99/cs733-raft/raft"
+	handler "github.com/saurabh-hote/cs733/handler"
+	raft "github.com/saurabh-hote/cs733/raft"
 	"io/ioutil"
 	"log"
 )
