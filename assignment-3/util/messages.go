@@ -15,13 +15,37 @@ const (
 	Broadcast = -1
 )
 
-
 type Lsn uint64      //Log sequence number, unique for all time.
 type ErrRedirect int // See Log.Append. Implements Error interface.
 type LogEntry interface {
 	Lsn() Lsn
 	Data() []byte
-	Committed() bool
+	IsCommitted() bool
+	CurrentTerm() uint64
+}
+
+//LogEntry interface implementation
+type LogEntryObj struct {
+	LogSeqNumber Lsn
+	DataBytes    []byte
+	Committed    bool
+	Term         uint64
+}
+
+func (entry LogEntryObj) Lsn() Lsn {
+	return entry.LogSeqNumber
+}
+
+func (entry LogEntryObj) Data() []byte {
+	return entry.DataBytes
+}
+
+func (entry LogEntryObj) IsCommitted() bool {
+	return entry.Committed
+}
+
+func (entry LogEntryObj) CurrentTerm() uint64 {
+	return entry.Term
 }
 
 type Event struct {
@@ -41,6 +65,7 @@ type AppendEntryRequest struct {
 
 type AppendEntryResponse struct {
 	//Reply strucrure.
+	ServerID         int
 	Term             uint64
 	Success          bool
 	PreviousLogIndex int64
@@ -49,9 +74,9 @@ type AppendEntryResponse struct {
 
 type HeartBeat struct {
 	LeaderID          int
-	PreviousLogIndex  int64
+	PreviousLogIndex  Lsn
 	PreviousLogTerm   uint64
-	LeaderCommitIndex int64
+	LeaderCommitIndex Lsn
 	Term              uint64
 }
 
@@ -63,8 +88,8 @@ type VoteRequest struct {
 }
 
 type VoteReply struct {
-	Term   uint64
-	Result bool
+	Term     uint64
+	Result   bool
 	ServerID int
 }
 

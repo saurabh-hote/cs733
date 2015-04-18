@@ -1,0 +1,1 @@
+{"Path":"/log","Servers":[{"Id":1,"Hostname":"localhost","ClientPort":5001,"LogPort":6001},{"Id":2,"Hostname":"localhost","ClientPort":5002,"LogPort":6002}]}

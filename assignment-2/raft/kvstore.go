@@ -3,8 +3,7 @@ package raft
 import (
 	"container/heap"
 	"fmt"
-	handler "github.com/saurabh-hote/cs733/assignment-3/handler"
-	util "github.com/saurabh-hote/cs733/assignment-3/util"
+	handler "github.com/saurabh-hote/cs733/assignment-2/handler"
 	"log"
 	"time"
 )
@@ -19,7 +18,7 @@ type value struct {
 }
 
 //Map Manager
-func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel has to be of type MyLogEntry. This is commitCh
+func InitializeKVStore(ch chan LogEntry) { //	This channel has to be of type MyLogEntry. This is commitCh
 	//The map which actually stores values
 	m := make(map[string]value)
 	h := &nodeHeap{}
@@ -29,10 +28,8 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 	for {
 		logEntry := <-ch
 		cmd, _ := handler.DecodeCommand(logEntry.Data())
-
-		responseMsg := "ERR_NOT_FOUND\r\n"
+		r := "ERR_NOT_FOUND\r\n"
 		val, ok := m[cmd.Key]
-
 		switch cmd.Action {
 		case handler.Set:
 			{
@@ -46,12 +43,12 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 				if cmd.Expiry != 0 {
 					heap.Push(h, node{t, cmd.Key, version})
 				}
-				responseMsg = fmt.Sprintf("OK %v\r\n", version)
+				r = fmt.Sprintf("OK %v\r\n", version)
 			}
 		case handler.Get:
 			{
 				if ok {
-					responseMsg = fmt.Sprintf("VALUE %v\r\n"+string(val.data)+"\r\n", val.numbytes)
+					r = fmt.Sprintf("VALUE %v\r\n"+string(val.data)+"\r\n", val.numbytes)
 				}
 			}
 		case handler.Getm:
@@ -61,7 +58,7 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 					if t != 0 {
 						t = val.expiry - time.Now().Unix() // remaining time
 					}
-					responseMsg = fmt.Sprintf("VALUE %v %v %v\r\n"+string(val.data)+"\r\n", val.version, t, val.numbytes)
+					r = fmt.Sprintf("VALUE %v %v %v\r\n"+string(val.data)+"\r\n", val.version, t, val.numbytes)
 				}
 			}
 		case handler.Cas:
@@ -78,9 +75,9 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 						if cmd.Expiry != 0 {
 							heap.Push(h, node{t, cmd.Key, version})
 						}
-						responseMsg = fmt.Sprintf("OK %v\r\n", version)
+						r = fmt.Sprintf("OK %v\r\n", version)
 					} else {
-						responseMsg = fmt.Sprintf("ERR_VERSION\r\n")
+						r = fmt.Sprintf("ERR_VERSION\r\n")
 					}
 				}
 			}
@@ -88,7 +85,7 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 			{
 				if ok {
 					delete(m, cmd.Key)
-					responseMsg = "DELETED\r\n"
+					r = "DELETED\r\n"
 				}
 			}
 		case handler.Cleanup:
@@ -101,37 +98,37 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 						delete(m, root.key)
 					}
 				}
-				responseMsg = "CLEANED\r\n"
+				r = "CLEANED\r\n"
 			}
 		default:
 			{
-				responseMsg = "ERR_INTERNAL\r\n"
+				r = "ERR_INTERNAL\r\n"
 			}
 		}
 
 		if cmd.Action != handler.Cleanup {
 			// Send response to appropriate handler's channel
-			util.ResponseChannelStore.RLock()
-			responseChannel := util.ResponseChannelStore.M[logEntry.Lsn()]
-			util.ResponseChannelStore.RUnlock()
+			ResponseChannelStore.RLock()
+			responseChannel := ResponseChannelStore.m[logEntry.Lsn()]
+			ResponseChannelStore.RUnlock()
 
 			if responseChannel == nil {
-				log.Printf("At server %d,  Response channel for LogEntry not found", serverID)
+				log.Println("KVStore: Response channel for LogEntry not found")
 			} else {
 				//Delete the entry for response channel handle
-				util.ResponseChannelStore.Lock()
-				delete(util.ResponseChannelStore.M, logEntry.Lsn())
-				util.ResponseChannelStore.Unlock()
-				*responseChannel <- responseMsg
+				ResponseChannelStore.Lock()
+				delete(ResponseChannelStore.m, logEntry.Lsn())
+				ResponseChannelStore.Unlock()
+				*responseChannel <- r
 			}
 		}
 	}
 }
 
-func cleaner(interval int, ch chan util.LogEntry) {
+func cleaner(interval int, ch chan LogEntry) {
 	command := handler.Command{handler.Cleanup, "", 0, 0, 0, nil}
 	data, err := handler.EncodeCommand(command)
-	logEntry := util.LogEntryObj{0, data, false, 0}
+	logEntry := LogEntryObj{0, data, false}
 	if err != nil {
 		log.Println("Error encoding the command ", err.Error())
 	}

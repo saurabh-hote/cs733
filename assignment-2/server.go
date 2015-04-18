@@ -4,9 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	handler "github.com/saurabh-hote/cs733/assignment-3/handler"
-	util "github.com/saurabh-hote/cs733/assignment-3/util"
-	raft "github.com/saurabh-hote/cs733/assignment-3/raft"
+	handler "github.com/saurabh-hote/cs733/assignment-2/handler"
+	raft "github.com/saurabh-hote/cs733/assignment-2/raft"
 	"io/ioutil"
 	"log"
 )
@@ -31,7 +30,7 @@ func ReadConfig(path string) (*raft.ClusterConfig, error) {
 }
 
 func main() {
-	//log.SetOutput(new(NullWriter))
+	log.SetOutput(new(NullWriter))
 
 	//TODO: Read the config.json file to get all the server configurations
 	clusterConfig, err := ReadConfig("config.json")
@@ -49,35 +48,39 @@ func main() {
 	}
 	log.Println("Starting sevrer with ID ", *serverIdPtr)
 
-	commitCh := make(chan util.LogEntry, 10000)
+	commitCh := make(chan raft.LogEntry, 10000)
 	raftInstance, err := raft.NewRaft(clusterConfig, *serverIdPtr, commitCh)
 	if err != nil {
 		log.Println("Error creating server instance : ", err.Error())
 	}
 
-	raftInstance.EventInCh = make(chan util.Event, 1000)
-	
 	//First entry in the ClusterConfig will be the default leader
 	var clientPort int
+	leaderConfig := raftInstance.ClusterConfig.Servers[0]
 	for _, server := range raftInstance.ClusterConfig.Servers {
+		raftInstance.LeaderID = leaderConfig.Id
+		if raftInstance.ServerID == leaderConfig.Id {
+			raftInstance.CurrentState = raft.LEADER
+		} else {
+			raftInstance.CurrentState = raft.FOLLOWER
+		}
+
 		//Initialize the connection handler module
 		if server.Id == raftInstance.ServerID {
 			clientPort = server.ClientPort
-			raftInstance.CurrentState = raft.FOLLOWER
 		}
 	}
-
 	if clientPort <= 0 {
 		log.Println("Server's client port not valid")
 	} else {
-		go handler.StartConnectionHandler(raftInstance.ServerID, clientPort, raftInstance.EventInCh)
+		go handler.StartConnectionHandler(clientPort, raftInstance.AppendRequestChannel)
 	}
 
 	//Inititialize the KV Store Module
-	go raft.InitializeKVStore(raftInstance.ServerID, raftInstance.CommitCh)
+	go raft.InitializeKVStore(raftInstance.CommitCh)
 
-	//Initialize the server 
-	raftInstance.InitServer()
+	//Now start the SharedLog module
+	raftInstance.StartServer()
 
 	log.Println("Started raft Instance for server ID ", raftInstance.ServerID)
 }

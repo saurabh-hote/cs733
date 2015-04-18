@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
-	util "github.com/saurabh-hote/cs733/assignment-3/util"
 	"io"
 	"log"
 	"net"
@@ -31,8 +30,12 @@ type Command struct {
 	Data     []byte
 }
 
-func StartConnectionHandler(serverID int, clientPort int, appendReqChannel chan util.Event) {
+type AppendRequestMessage struct {
+	Data            []byte
+	ResponseChannel *chan string
+}
 
+func StartConnectionHandler(clientPort int, appendReqChannel chan AppendRequestMessage) {
 	sock, err := net.Listen("tcp", ":"+strconv.FormatInt(int64(clientPort), 10))
 	if err != nil {
 		return
@@ -42,18 +45,18 @@ func StartConnectionHandler(serverID int, clientPort int, appendReqChannel chan 
 		if err != nil {
 			return
 		}
-		go HandleConn(serverID, conn, appendReqChannel)
+		go HandleConn(conn, appendReqChannel)
 	}
 }
 
-func HandleConn(serverID int, conn net.Conn, appendReqChannel chan util.Event) {
+func HandleConn(conn net.Conn, appendReqChannel chan AppendRequestMessage) {
 	addr := conn.RemoteAddr()
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 	responseChannel := make(chan string)
 
 	//launch client specific go routine for initiating the repsonse channel
-	go pollAndReply(serverID, writer, addr, &responseChannel)
+	go pollAndReply(writer, addr, &responseChannel)
 
 	for {
 		//Command Prompt
@@ -62,7 +65,7 @@ func HandleConn(serverID int, conn net.Conn, appendReqChannel chan util.Event) {
 		str, e := reader.ReadString('\n')
 		if e != nil {
 			//Read error
-			log.Printf("At Server %d, ERROR reading -  %s", serverID, e.Error())
+			log.Println("ERROR reading:", addr, e)
 			break
 		}
 
@@ -82,13 +85,13 @@ func HandleConn(serverID int, conn net.Conn, appendReqChannel chan util.Event) {
 				_, ed := io.ReadFull(reader, buf)
 				if (ed) != nil {
 					//Read error
-					log.Printf("At Server %d, ERROR reading -  %s", serverID, ed.Error())
+					log.Println("ERROR reading data:", addr, ed)
 					break
 				}
 				tail, ed2 := reader.ReadString('\n')
 				if (ed2) != nil {
 					//Read error
-					log.Printf("At Server %d, ERROR reading -  %s", serverID, ed2.Error())
+					log.Println("ERROR reading post-data:", addr, ed2)
 					break
 				}
 				cmd.Data = buf
@@ -101,11 +104,11 @@ func HandleConn(serverID int, conn net.Conn, appendReqChannel chan util.Event) {
 			data, err := EncodeCommand(cmd)
 
 			if err != nil {
-				log.Printf("At Server %d, ERROR in encoding to gob -  %s", serverID, err.Error())
+				log.Println("ERROR in encoding to gob:", err)
 			}
 
 			//now create message for the shared log module
-			message := util.Event{util.TypeClientAppendRequest, util.ClientAppendRequest{data, &responseChannel}}
+			message := AppendRequestMessage{data, &responseChannel}
 
 			//push the messgae onto the shared channel
 			//This will block until previous request gets completed
@@ -113,10 +116,7 @@ func HandleConn(serverID int, conn net.Conn, appendReqChannel chan util.Event) {
 		}
 	}
 	// Shut down the connection.
-	log.Printf("At Server %d, Closing the client port.", serverID)
-
-	//Remove the response channel from the map
-
+	log.Println("Closing connection", addr)
 	conn.Close()
 }
 
@@ -138,17 +138,31 @@ func DecodeCommand(data []byte) (Command, error) {
 	return command, err
 }
 
-func pollAndReply(serverID int, w *bufio.Writer, clientAddr net.Addr, responseChannel *chan string) {
+/*
+//Writes in TCP connection
+func write(w *bufio.Writer, a net.Addr, s string) {
+	_, err := fmt.Fprintf(w, s)
+	if err != nil {
+		log.Println("ERROR writing:", a, err)
+	}
+	err = w.Flush()
+	if err != nil {
+		log.Println("ERROR flushing:", a, err)
+	}
+}
+*/
+
+func pollAndReply(w *bufio.Writer, clientAddr net.Addr, responseChannel *chan string) {
 	for {
 		replyMessage := <-*responseChannel
 
 		_, err := fmt.Fprintf(w, replyMessage)
 		if err != nil {
-			log.Printf("At Server %d, ERROR writing - %s: %s", serverID, clientAddr.String(), replyMessage)
+			log.Println("ERROR writing:", clientAddr, replyMessage)
 		}
 		err = w.Flush()
 		if err != nil {
-			log.Printf("At Server %d, ERROR flushing - %s: %s", serverID, clientAddr.String(), err.Error())
+			log.Println("ERROR flushing:", clientAddr, err)
 		}
 	}
 }
