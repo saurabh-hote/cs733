@@ -2,27 +2,40 @@
 
 Saurabh Hote 13305R008
 
-Note: Not ready for evaluation.
-Coded for leader election part. But implementation for logging part is not done yet. Also, need to code the test cases.
-I am planning to complete the implementation over the weekend.
+Note: 
+Coded and tested for the leader election part and log synchronization. The code is ready with integration of memcached key value store. However some parts still need to be tested throughly. I will need a couple of more days to complete the testing. 
 
 # Description
-This piece of work is an implementation of Raft protocol. The reference paper can be found at https://ramcloud.stanford.edu/raft.pdf
+This piece of work is an implementation of Raft protocol for distributed consensus. The reference paper can be found at https://ramcloud.stanford.edu/raft.pdf
+In Raft, consistency is achieved by ensuring that if any server has applied a particular log entry to its state machine, then no other server may apply a different command for the same log index.
+There are two main features of this implementation, namely -
+1. Leader Election
+	The leader is responsible for accepting the client request and replicating the log across server replicas. Every server replica on start-up contends for becoming the leader by changing its state to CANDIDATE upon expiry of heartbeat timers.
+	Candidate getting majority of votes gets elected as a leader. Since there can be only one candidate receiving the majority for an election process (election term), a system will always elect only one leader. 
+
+2. Log Synchronization
+	The elected leader upon receiving command request from clients performs append operation on the local log structure and then replicates this entry to other servers. The leader proceeds onto committing the new log entry only when it receives positive ack from the majority of the server replicas. 
+
 
 # Features
-* The code is divided into three different modules namely the Connection_Handler, the SharedLog and the KVStore.
-* Current implementation does not incorporate the leader election process. The server which is run first will be the default leader of Raft. Others will be followers.
-* All Client communication is handled by the Leader. The leader takes consensus from the majority of server replicas before committing the changes.
-* If a client tries to communicate with a non-leader server then it gets "ERR_REDIRECT host port" message where host=ip-address/name of Leader and port=port# of leader.
+* The code is divided into three different modules namely the Connection_Handler, the SharedLog and the KVStore
+* All Client communication is handled by the Leader. The leader needs to get consensus from the majority of server replicas before committing the commands and executing them onto the state machine
+* If a client tries to communicate with a non-leader server then it gets "ERR_REDIRECT host port" message where host=ip-address/name of Leader and port=port# of leader
+* This implementation uses boltdb (https://www.progville.com/go/bolt-embedded-db-golang/) for log on-disk management 
+* golang's 'net' package is used for communication between the server replicas
 
 
 # Instructions: How to run
-1.Obtain a copy of the project using:	go get github.com/saurabh-hote/cs733
+1.Obtain a copy of the project using:	
+	go get github.com/saurabh-hote/cs733
+	go get github.com/boltdb/bolt
+	go get github.com/codegangsta/cli
 
-2.Change directory to cs733-raft : cd $GOPATH/src/github.com/saurabh-hote/cs733/assignment-3/
+2.Change directory to assignment-3 folder :
+	cd $GOPATH/src/github.com/saurabh-hote/cs733/assignment-3/
 
 3.Run the test script using following commands: 
-					go run server.go
+	go test
 
 Thank you!
  
