@@ -4,7 +4,6 @@ package util
 const (
 	TypeAppendEntryRequest = iota
 	TypeAppendEntryResponse
-	TypeHeartBeat
 	TypeVoteRequest
 	TypeVoteReply
 	TypeTimeout
@@ -58,9 +57,9 @@ type AppendEntryRequest struct {
 	LogEntry               LogEntry
 	LeaderID               int
 	LeaderCommitIndex      Lsn
-	PreviousSharedLogIndex Lsn
+	PreviousLogIndex Lsn
 	Term                   uint64
-	PreviousSharedLogTerm  uint64
+	PreviousLogTerm  uint64
 }
 
 type AppendEntryResponse struct {
@@ -68,16 +67,8 @@ type AppendEntryResponse struct {
 	ServerID         int
 	Term             uint64
 	Success          bool
-	PreviousLogIndex int64
-	ExpectedIndex    int64
-}
-
-type HeartBeat struct {
-	LeaderID          int
-	PreviousLogIndex  Lsn
-	PreviousLogTerm   uint64
-	LeaderCommitIndex Lsn
-	Term              uint64
+	PreviousLogIndex Lsn
+	ExpectedIndex    Lsn
 }
 
 type VoteRequest struct {

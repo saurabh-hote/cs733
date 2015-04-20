@@ -2,6 +2,7 @@ package raft
 
 import (
 	"encoding/gob"
+	"errors"
 	util "github.com/saurabh-hote/cs733/assignment-3/util"
 	"log"
 	"math/rand"
@@ -57,7 +58,6 @@ type Raft struct {
 
 	//entries for implementing Shared Log
 	LogObj               *util.Log
-	CurrentLsn           util.Lsn
 	EventInCh            chan util.Event
 	ServerQuitCh         chan chan struct{}
 	ElectionTimer        <-chan time.Time
@@ -67,6 +67,10 @@ type Raft struct {
 	ReplicaChannels      map[int]*gob.Encoder //map of replica id to socket
 
 	timer *time.Timer
+
+	//Fields required in case the server is leader
+	nextIndex  map[int]util.Lsn
+	matchIndex map[int]util.Lsn
 }
 
 // Creates a raft object. This implements the SharedLog interface.
@@ -80,17 +84,18 @@ func NewRaft(config *ClusterConfig, thisServerId int, commitCh chan util.LogEntr
 	raft.CommitCh = commitCh
 	//	raft.AppendRequestCh = make(chan handler.AppendRequestMessage)
 	//	raft.LogEntryBuffer = make([]LogEntry, 0)
-	raft.CurrentLsn = 0
 	raft.LastVotedCandidateID = -1
 	raft.LastVotedTerm = 0
 	raft.ReplicaChannels = make(map[int]*gob.Encoder)
+	raft.nextIndex = make(map[int]util.Lsn)
+	raft.matchIndex = make(map[int]util.Lsn)
 
 	raft.LogObj = util.NewLog(raft.ServerID) //State the file name
 	raft.LogObj.SendToStateMachine = func(entry *util.LogEntryObj) {
 		raft.CommitCh <- *entry
 	}
 	raft.LogObj.FirstRead()
-
+	raft.Term = raft.LogObj.LastTerm() + 1
 	return raft, nil
 }
 
@@ -101,9 +106,8 @@ func (e ErrRedirect) Error() string {
 
 func (raft *Raft) Append(data []byte) (util.LogEntry, error) {
 	if len(data) > 0 {
-		raft.CurrentLsn++
 		var logEntry util.LogEntryObj
-		logEntry = util.LogEntryObj{raft.CurrentLsn, data, false, raft.Term}
+		logEntry = util.LogEntryObj{raft.LogObj.LastIndex() + 1, data, false, raft.Term}
 		raft.LogObj.AppendEntry(logEntry)
 		return logEntry, nil
 	} else {
@@ -137,11 +141,10 @@ func (raft *Raft) Follower() string {
 	for {
 		select {
 		case <-raft.timer.C:
-			log.Println("Election timed out. State for server ", raft.ServerID, " changing to ", CANDIDATE)
+			log.Printf("At server %d, Election timed out. State changing from %s to %s", raft.ServerID, raft.CurrentState, CANDIDATE)
 			raft.Term++
 			raft.LastVotedCandidateID = -1
 			raft.LeaderID = -1
-			raft.timer.Stop()
 			raft.timer.Reset(getRandomWaitDuration())
 			return CANDIDATE // new state back to loop()
 
@@ -175,72 +178,36 @@ func (raft *Raft) Follower() string {
 				raft.LeaderID = message.CandidateID
 				raft.LastVotedCandidateID = message.CandidateID
 				raft.LastVotedTerm = message.Term
-				/*
-					if message.Term < raft.Term {
 
-					} //TODO: saurabh - add response
-
-					if message.Term > raft.Term {
-						raft.Term = message.Term
-					}
-
-					if message.Term != raft.LastVotedTerm {
-						timer.Stop()
-						timer = raft.ResetTimer()
-						 reply ok to event.msg.serverid
-						raft.sendToServerReplica(util.Event{util.TypeVoteReply, util.VoteReply{message.Term, true}}, message.CandidateID)
-						//TODO: Saurabh - remember term, leader id (either in log or in separate file)
-						raft.LastVotedTerm = message.Term
-					}
-				*/
 			case util.TypeAppendEntryRequest:
-				raft.timer.Stop()
-				raft.timer.Reset(getRandomWaitDuration())
 				message := event.Data.(util.AppendEntryRequest)
-				log.Printf("At Server %d, received AppendEntryResquest from %d", raft.ServerID, message.LeaderID)
+				if message.LogEntry == nil {
+					log.Printf("At server %d, Heartbeat message receievd from leader %d", raft.ServerID, message.LeaderID)
+				} else {
+					log.Printf("At Server %d, received AppendEntryResquest from %d", raft.ServerID, message.LeaderID)
+				}
 
 				if raft.LeaderID == -1 {
 					raft.LeaderID = message.LeaderID
-					log.Printf("Server %d found a new leader %d", raft.ServerID, message.LeaderID)
+					log.Printf("At server %d, found a new leader %d", raft.ServerID, message.LeaderID)
 				}
 
 				resp, changeOfLeader := raft.validateAppendEntryRequest(message)
-				resp.ServerID = raft.ServerID
 
-				log.Printf("At Server %d, sending AppendEntryResponse to leader %d", raft.ServerID, message.LeaderID)
+				if message.LogEntry != nil {
+					log.Printf("At Server %d, sending AppendEntryResponse to leader %d", raft.ServerID, message.LeaderID)
+					raft.sendToServerReplica(util.Event{util.TypeAppendEntryResponse, resp}, message.LeaderID)
+				} else {
+					return FOLLOWER
+				}
 
-				raft.sendToServerReplica(util.Event{util.TypeAppendEntryResponse, resp}, message.LeaderID)
 				if changeOfLeader {
 					raft.LeaderID = message.LeaderID
 					return FOLLOWER
 				}
 
-				/*
-					if message.Term < raft.Term {
-						continue
-					}
-					   reset heartbeat timer
-					   upgrade to event.msg.term if necessary
-					   if prev entries of my log and event.msg match
-					      add to disk log
-					      flush disk log
-					      respond ok to event.msg.serverid
-					   else
-					      respond err.
-				*/
 			case util.TypeTimeout:
 
-			case util.TypeHeartBeat:
-				//Make a check if the heartbeat is received from last voted server
-				message := event.Data.(util.HeartBeat)
-				log.Println("Heartbeat message receievd at server ", raft.ServerID, " from leader ", message.LeaderID)
-
-				//TODO: Add the code for the follwing condition
-				/*if message.LeaderID == raft.Leader() {
-				}*/
-				//				raft.timer.Stop()
-				raft.timer.Reset(getRandomWaitDuration())
-				return FOLLOWER
 			}
 		}
 	}
@@ -300,25 +267,6 @@ func (raft *Raft) Candidate() string {
 					return FOLLOWER
 				}
 
-			/*
-				if message.Term < raft.Term {
-
-				} //TODO: saurabh - add response
-
-				if message.Term > raft.Term {
-					raft.Term = message.Term
-				}
-
-				if message.Term != raft.LastVotedTerm {
-					timer.Stop()
-					timer = raft.ResetTimer()
-					 reply ok to event.msg.serverid
-					raft.sendToServerReplica(util.Event{util.TypeVoteReply, util.VoteReply{message.Term, true}}, message.CandidateID)
-					//TODO: Saurabh - remember term, leader id (either in log or in separate file)
-					raft.LastVotedTerm = message.Term
-				}
-			*/
-
 			case util.TypeVoteReply:
 				message := event.Data.(util.VoteReply)
 				if message.Term > raft.Term {
@@ -347,68 +295,56 @@ func (raft *Raft) Candidate() string {
 				}
 
 			case util.TypeAppendEntryRequest:
-				raft.timer.Stop()
-				raft.timer.Reset(getRandomWaitDuration())
 				message := event.Data.(util.AppendEntryRequest)
-				resp, stepDown := raft.validateAppendEntryRequest(message)
-				resp.ServerID = raft.ServerID
+				if message.LogEntry == nil {
+					log.Printf("At server %d, Heartbeat message receievd from leader %d", raft.ServerID, message.LeaderID)
+				} else {
+					log.Printf("At Server %d, received AppendEntryResquest from %d", raft.ServerID, message.LeaderID)
+				}
 
-				raft.sendToServerReplica(util.Event{util.TypeAppendEntryResponse, resp}, message.LeaderID)
+				if raft.LeaderID == -1 {
+					raft.LeaderID = message.LeaderID
+					log.Printf("At server %d, found a new leader %d", raft.ServerID, message.LeaderID)
+				}
 
-				if stepDown {
+				resp, changeOfLeader := raft.validateAppendEntryRequest(message)
+
+				if message.LogEntry != nil {
+					log.Printf("At Server %d, sending AppendEntryResponse to leader %d", raft.ServerID, message.LeaderID)
+					raft.sendToServerReplica(util.Event{util.TypeAppendEntryResponse, resp}, message.LeaderID)
+				} else {
+					return FOLLOWER
+				}
+
+				if changeOfLeader {
 					raft.LeaderID = message.LeaderID
 					return FOLLOWER
 				}
 
-				/*
-					if message.Term < raft.Term {
-						continue
-					}
-					   reset heartbeat timer
-					   upgrade to event.msg.term if necessary
-					   if prev entries of my log and event.msg match
-					      add to disk log
-					      flush disk log
-					      respond ok to event.msg.serverid
-					   else
-					      respond err.
-				*/
 			case util.TypeTimeout:
 
-			case util.TypeHeartBeat:
-				//Make a check if the heartbeat is received from last voted server
-				message := event.Data.(util.HeartBeat)
-				log.Println("Heartbeat message receievd at server ", raft.ServerID, " from leader ", message.LeaderID)
-
-				//TODO: Add the code for the follwing condition
-				/*if message.LeaderID == raft.Leader() {
-				}*/
-				if message.Term > raft.Term {
-					//					raft.timer.Stop()
-					raft.timer.Reset(getRandomWaitDuration())
-					return FOLLOWER
-				} else {
-					raft.timer.Reset(getRandomWaitDuration())
-					return CANDIDATE
-				}
 			}
 
 		case <-raft.timer.C:
-			log.Println("Election Timed out for server ", raft.ServerID, ". Incrementing term")
+			log.Printf("At server %d, Election ended with no leader", raft.ServerID)
 			raft.Term++
 			raft.LastVotedCandidateID = -1
 			raft.LeaderID = -1
-			raft.timer.Stop()
 			raft.timer.Reset(getRandomWaitDuration())
 			return CANDIDATE // new state back to loop()
-
 		}
 	}
 	return raft.CurrentState
 }
 
 func (raft *Raft) Leader() string {
-	//TODO: remove this code
+	//Initialize the nextIndex and matchIndexStructures
+	for _, server := range raft.ClusterConfig.Servers {
+		if server.Id != raft.ServerID {
+			raft.nextIndex[server.Id] = raft.LogObj.LastIndex() + 1
+			raft.matchIndex[server.Id] = 0
+		}
+	}
 
 	//Start hearbeat sending routine
 	go raft.sendHeartbeat()
@@ -418,7 +354,6 @@ func (raft *Raft) Leader() string {
 	ackCount := 0
 	nakCount := 0
 	var previousLogEntryForConsensus util.LogEntry
-	quorumsReceived := 0
 
 	for {
 		select {
@@ -427,11 +362,11 @@ func (raft *Raft) Leader() string {
 			case util.TypeClientAppendRequest:
 				log.Printf("At Server %d, received client append request", raft.ServerID)
 				appendRPCMessage := util.AppendEntryRequest{
-					LeaderID:               raft.ServerID,
-					LeaderCommitIndex:      raft.LogObj.GetCommitIndex(),
-					PreviousSharedLogIndex: raft.LogObj.LastIndex(),
-					Term: raft.Term,
-					PreviousSharedLogTerm: raft.LogObj.LastTerm(),
+					LeaderID:          raft.ServerID,
+					LeaderCommitIndex: raft.LogObj.GetCommitIndex(),
+					PreviousLogIndex:  raft.LogObj.LastIndex(),
+					Term:              raft.Term,
+					PreviousLogTerm:   raft.LogObj.LastTerm(),
 				}
 
 				message := event.Data.(util.ClientAppendRequest)
@@ -470,14 +405,17 @@ func (raft *Raft) Leader() string {
 
 			case util.TypeAppendEntryRequest:
 				message := event.Data.(util.AppendEntryRequest)
-				log.Println("Error: Two servers in leader state found. ", "IDs - ", raft.ServerID, ":", message.LeaderID, " Terms - ", raft.Term, ":", message.Term)
+				log.Printf("At server %d, Error - Two servers in leader state found. Server %d at term %d, Server %d at term %d", raft.ServerID, raft.ServerID, raft.Term, message.LeaderID, message.Term)
 				resp, changeState := raft.validateAppendEntryRequest(message)
 
-				//send serponse to the leader
-				raft.sendToServerReplica(util.Event{util.TypeAppendEntryResponse, resp}, message.LeaderID)
+				if message.LogEntry != nil {
+					//send serponse to the leader
+					raft.sendToServerReplica(util.Event{util.TypeAppendEntryResponse, resp}, message.LeaderID)
+				}
 
 				if changeState {
 					raft.LeaderID = message.LeaderID
+					log.Printf("At server %d, Changing state to FOLLOWER", raft.ServerID)
 					return FOLLOWER
 				}
 
@@ -497,13 +435,13 @@ func (raft *Raft) Leader() string {
 							//Now send the entry to KV store
 							raft.CommitCh <- previousLogEntryForConsensus
 
-							quorumsReceived++
+							log.Printf("At Server %d, committing to index %d", raft.ServerID, raft.LogObj.LastIndex()-1)
+							raft.LogObj.CommitTo(raft.LogObj.LastIndex() - 1)
 
 							//reset ackCount
 							ackCount = 0
 							nakCount = 0
 						}
-
 					} else {
 						log.Printf("At Server %d, received negative response from server %d", raft.ServerID, message.ServerID)
 						nakCount++
@@ -535,7 +473,6 @@ func (raft *Raft) Leader() string {
 				}
 
 			case util.TypeTimeout:
-
 			}
 		case <-raft.timer.C:
 			/*
@@ -548,12 +485,6 @@ func (raft *Raft) Leader() string {
 				return CANDIDATE // new state back to loop()
 			*/
 		}
-
-		if quorumsReceived >= 2 {
-			raft.LogObj.CommitTo(raft.LogObj.LastIndex() - 1)
-			log.Printf("At Server %d, committing to %d", raft.ServerID, raft.LogObj.LastIndex()-1)
-		}
-
 	}
 	return raft.CurrentState
 
@@ -569,7 +500,6 @@ func (raft *Raft) InitServer() {
 	gob.Register(util.AppendEntryResponse{})
 	gob.Register(util.ClientAppendRequest{})
 	gob.Register(util.Timeout{})
-	gob.Register(util.HeartBeat{})
 
 	go raft.startListeningForReplicaEvents()
 
@@ -578,9 +508,8 @@ func (raft *Raft) InitServer() {
 	raft.Loop()
 }
 
-// give vote
 func (raft *Raft) validateVoteRequest(req util.VoteRequest) (util.VoteReply, bool) {
-	if req.Term < raft.Term {
+	if req.Term <= raft.Term {
 		return util.VoteReply{raft.Term, false, raft.ServerID}, false
 	}
 
@@ -593,26 +522,26 @@ func (raft *Raft) validateVoteRequest(req util.VoteRequest) (util.VoteReply, boo
 		changeState = true
 	}
 
-	if (raft.CurrentState == LEADER && !changeState) ||
-		(raft.LastVotedCandidateID != -1 && raft.LastVotedCandidateID != req.CandidateID) ||
-		(raft.CurrentLsn > req.LastLogIndex || raft.LastVotedTerm > req.LastLogTerm) {
+	if (raft.CurrentState == LEADER && !changeState) || (raft.LastVotedCandidateID != -1 && raft.LastVotedCandidateID != req.CandidateID) || (raft.LogObj.LastIndex() > req.LastLogIndex || raft.LogObj.LastTerm() > req.LastLogTerm) {
+		log.Printf("At Server %d, sending negative vote reply to server %d", raft.ServerID, req.CandidateID)
 		return util.VoteReply{raft.Term, false, raft.ServerID}, changeState
 	} else {
 		raft.LastVotedCandidateID = req.CandidateID
-		raft.timer.Stop()
 		raft.timer.Reset(getRandomWaitDuration())
+		log.Printf("At Server %d, sending positive vote reply to server %d", raft.ServerID, req.CandidateID)
 		return util.VoteReply{raft.Term, true, raft.ServerID}, changeState
 	}
 
 }
 
-// heartbeat from sevrer recieved
 func (raft *Raft) validateAppendEntryRequest(req util.AppendEntryRequest) (util.AppendEntryResponse, bool) {
-
 	if req.Term < raft.Term {
 		return util.AppendEntryResponse{
-			Term:    raft.Term,
-			Success: false,
+			Term:             raft.Term,
+			Success:          false,
+			ServerID:         raft.ServerID,
+			PreviousLogIndex: raft.LogObj.LastIndex(),
+			ExpectedIndex:    raft.LogObj.LastIndex() + 1,
 		}, false
 	}
 	stepDown := false
@@ -637,44 +566,57 @@ func (raft *Raft) validateAppendEntryRequest(req util.AppendEntryRequest) (util.
 	raft.timer.Reset(getRandomWaitDuration())
 
 	// Reject if log doesn't contain a matching previous entry
-	log.Printf("At Server %d, Performing log discard check with index = %d", raft.ServerID, req.PreviousSharedLogIndex)
+	log.Printf("At Server %d, Performing log discard check with index = %d", raft.ServerID, req.PreviousLogIndex)
 
-	err := raft.LogObj.Discard(req.PreviousSharedLogIndex, req.PreviousSharedLogTerm)
+	err := raft.LogObj.Discard(req.PreviousLogIndex, req.PreviousLogTerm)
 
 	if err != nil {
 		log.Printf("At Server %d, Log discard check failed - %s", raft.ServerID, err)
 		return util.AppendEntryResponse{
-			Term:    raft.Term,
-			Success: false,
+			Term:             raft.Term,
+			Success:          false,
+			ServerID:         raft.ServerID,
+			PreviousLogIndex: raft.LogObj.LastIndex(),
+			ExpectedIndex:    raft.LogObj.LastIndex() + 1,
 		}, stepDown
 	}
 
 	entry := req.LogEntry
-	// Append entry to the log
-	if err := raft.LogObj.AppendEntry(entry.(util.LogEntryObj)); err != nil {
-		log.Printf("At Server %d, Log Append failed - %s", raft.ServerID, err.Error())
+	if entry != nil {
+		// Append entry to the log
+		if err := raft.LogObj.AppendEntry(entry.(util.LogEntryObj)); err != nil {
+			log.Printf("At Server %d, Log Append failed - %s", raft.ServerID, err.Error())
 
-		return util.AppendEntryResponse{
-			Term:    raft.Term,
-			Success: false,
-		}, stepDown
+			return util.AppendEntryResponse{
+				Term:             raft.Term,
+				Success:          false,
+				ServerID:         raft.ServerID,
+				PreviousLogIndex: raft.LogObj.LastIndex(),
+				ExpectedIndex:    raft.LogObj.LastIndex() + 1,
+			}, stepDown
+		}
 	}
 
 	if req.LeaderCommitIndex > 0 && req.LeaderCommitIndex > raft.LogObj.GetCommitIndex() {
 		log.Printf("At Server %d, Committing to index %d", raft.ServerID, req.LeaderCommitIndex)
 		if err := raft.LogObj.CommitTo(req.LeaderCommitIndex); err != nil {
 			return util.AppendEntryResponse{
-				Term:    raft.Term,
-				Success: false,
+				Term:             raft.Term,
+				Success:          false,
+				ServerID:         raft.ServerID,
+				PreviousLogIndex: raft.LogObj.LastIndex(),
+				ExpectedIndex:    raft.LogObj.LastIndex() + 1,
 			}, stepDown
 		}
 	}
 
 	return util.AppendEntryResponse{
-		Term:    raft.Term,
-		Success: true,
+		Term:             raft.Term,
+		Success:          true,
+		ServerID:         raft.ServerID,
+		PreviousLogIndex: raft.LogObj.LastIndex(),
+		ExpectedIndex:    raft.LogObj.LastIndex() + 1,
 	}, stepDown
-
 }
 
 func (raft *Raft) sendHeartbeat() {
@@ -683,15 +625,16 @@ func (raft *Raft) sendHeartbeat() {
 	for {
 		if raft.CurrentState == LEADER {
 			timer.Reset(time.Duration(heartbeatMsgInterval) * time.Second)
-			heartbeatMsg := util.HeartBeat{
+			heartbeatMsg := util.AppendEntryRequest{
 				LeaderID:          raft.ServerID,
 				PreviousLogIndex:  raft.LogObj.LastIndex(),
 				PreviousLogTerm:   raft.LogObj.LastTerm(),
 				LeaderCommitIndex: raft.LogObj.GetCommitIndex(),
 				Term:              raft.Term,
+				LogEntry:          nil,
 			}
 
-			message := util.Event{util.TypeHeartBeat, heartbeatMsg}
+			message := util.Event{util.TypeAppendEntryRequest, heartbeatMsg}
 
 			raft.sendToServerReplica(message, util.Broadcast)
 			log.Println("Hearbeat sent by leader ", raft.ServerID)
@@ -714,7 +657,7 @@ func (raft *Raft) createReplicaConnections() {
 		if server.Id == raft.ServerID {
 			continue
 		} else {
-			raft.connect(server.Id, server.Hostname, server.LogPort)
+			go raft.connect(server.Id, server.Hostname, server.LogPort)
 		}
 	}
 }
@@ -777,10 +720,15 @@ func (raft *Raft) sendToServerReplica(message util.Event, replicaID int) {
 			if serverID == raft.ServerID {
 				continue
 			} else {
-				err = replicaSocket.Encode(&message)
+				if replicaSocket != nil {
+					err = replicaSocket.Encode(&message)
+				} else {
+					err = errors.New("Invalid channel to server" + strconv.Itoa(serverID))
+				}
+
 				if err != nil {
-					log.Printf("At server %d, Send error - %s", raft.ServerID, err.Error())
-					log.Printf("At server %d, Attempting reconnect with server %d", raft.ServerID, serverID)
+					//log.Printf("At server %d, Send error - %s", raft.ServerID, err.Error())
+					//log.Printf("At server %d, Attempting reconnect with server %d", raft.ServerID, serverID)
 
 					serverConfig := raft.ClusterConfig.Servers[0]
 					for _, server := range raft.ClusterConfig.Servers {
@@ -788,16 +736,20 @@ func (raft *Raft) sendToServerReplica(message util.Event, replicaID int) {
 							serverConfig = server
 						}
 					}
-					raft.connect(serverID, serverConfig.Hostname, serverConfig.LogPort)
+					go raft.connect(serverID, serverConfig.Hostname, serverConfig.LogPort)
 				}
 			}
 		}
 	} else {
-		encoder := raft.ReplicaChannels[replicaID]
-		err = encoder.Encode(message)
+		replicaSocket := raft.ReplicaChannels[replicaID]
+		if replicaSocket != nil {
+			err = replicaSocket.Encode(&message)
+		} else {
+			err = errors.New("Invalid channel to server" + strconv.Itoa(replicaID))
+		}
 		if err != nil {
-			log.Printf("At server %d, Send error - %s", raft.ServerID, err.Error())
-			log.Printf("At server %d, Attempting reconnect with server %d", raft.ServerID, replicaID)
+			//log.Printf("At server %d, Send error - %s", raft.ServerID, err.Error())
+			//log.Printf("At server %d, Attempting reconnect with server %d", raft.ServerID, replicaID)
 
 			serverConfig := raft.ClusterConfig.Servers[0]
 			for _, server := range raft.ClusterConfig.Servers {
@@ -806,7 +758,7 @@ func (raft *Raft) sendToServerReplica(message util.Event, replicaID int) {
 				}
 			}
 
-			raft.connect(replicaID, serverConfig.Hostname, serverConfig.LogPort)
+			go raft.connect(replicaID, serverConfig.Hostname, serverConfig.LogPort)
 		}
 	}
 }
