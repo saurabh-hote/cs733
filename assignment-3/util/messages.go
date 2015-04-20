@@ -54,12 +54,12 @@ type Event struct {
 
 //This struct will be sent as RPC message between the replicas
 type AppendEntryRequest struct {
-	LogEntry               LogEntry
-	LeaderID               int
-	LeaderCommitIndex      Lsn
-	PreviousLogIndex Lsn
-	Term                   uint64
-	PreviousLogTerm  uint64
+	LogEntries        []LogEntry
+	LeaderID          int
+	LeaderCommitIndex Lsn
+	PreviousLogIndex  Lsn
+	Term              uint64
+	PreviousLogTerm   uint64
 }
 
 type AppendEntryResponse struct {

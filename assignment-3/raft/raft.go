@@ -181,7 +181,7 @@ func (raft *Raft) Follower() string {
 
 			case util.TypeAppendEntryRequest:
 				message := event.Data.(util.AppendEntryRequest)
-				if message.LogEntry == nil {
+				if message.LogEntries == nil {
 					log.Printf("At server %d, Heartbeat message receievd from leader %d", raft.ServerID, message.LeaderID)
 				} else {
 					log.Printf("At Server %d, received AppendEntryResquest from %d", raft.ServerID, message.LeaderID)
@@ -194,7 +194,7 @@ func (raft *Raft) Follower() string {
 
 				resp, changeOfLeader := raft.validateAppendEntryRequest(message)
 
-				if message.LogEntry != nil {
+				if message.LogEntries != nil {
 					log.Printf("At Server %d, sending AppendEntryResponse to leader %d", raft.ServerID, message.LeaderID)
 					raft.sendToServerReplica(util.Event{util.TypeAppendEntryResponse, resp}, message.LeaderID)
 				} else {
@@ -296,7 +296,7 @@ func (raft *Raft) Candidate() string {
 
 			case util.TypeAppendEntryRequest:
 				message := event.Data.(util.AppendEntryRequest)
-				if message.LogEntry == nil {
+				if message.LogEntries == nil {
 					log.Printf("At server %d, Heartbeat message receievd from leader %d", raft.ServerID, message.LeaderID)
 				} else {
 					log.Printf("At Server %d, received AppendEntryResquest from %d", raft.ServerID, message.LeaderID)
@@ -309,7 +309,7 @@ func (raft *Raft) Candidate() string {
 
 				resp, changeOfLeader := raft.validateAppendEntryRequest(message)
 
-				if message.LogEntry != nil {
+				if message.LogEntries != nil {
 					log.Printf("At Server %d, sending AppendEntryResponse to leader %d", raft.ServerID, message.LeaderID)
 					raft.sendToServerReplica(util.Event{util.TypeAppendEntryResponse, resp}, message.LeaderID)
 				} else {
@@ -385,7 +385,8 @@ func (raft *Raft) Leader() string {
 				previousLogEntryForConsensus = logEntry
 
 				//now check for consensus
-				appendRPCMessage.LogEntry = logEntry
+				appendRPCMessage.LogEntries = make([]util.LogEntry, 1)
+				appendRPCMessage.LogEntries = append(appendRPCMessage.LogEntries, logEntry)
 
 				log.Printf("At Server %d, sending TypeAppendEntryRequest", raft.ServerID)
 
@@ -408,7 +409,7 @@ func (raft *Raft) Leader() string {
 				log.Printf("At server %d, Error - Two servers in leader state found. Server %d at term %d, Server %d at term %d", raft.ServerID, raft.ServerID, raft.Term, message.LeaderID, message.Term)
 				resp, changeState := raft.validateAppendEntryRequest(message)
 
-				if message.LogEntry != nil {
+				if message.LogEntries != nil {
 					//send serponse to the leader
 					raft.sendToServerReplica(util.Event{util.TypeAppendEntryResponse, resp}, message.LeaderID)
 				}
@@ -560,6 +561,7 @@ func (raft *Raft) validateAppendEntryRequest(req util.AppendEntryRequest) (util.
 		raft.Term = req.Term
 		raft.LastVotedCandidateID = -1
 		stepDown = true
+		raft.LeaderID = req.LeaderID
 	}
 
 	raft.timer.Stop()
@@ -581,7 +583,10 @@ func (raft *Raft) validateAppendEntryRequest(req util.AppendEntryRequest) (util.
 		}, stepDown
 	}
 
-	entry := req.LogEntry
+	var entry util.LogEntry
+	if req.LogEntries != nil && len(req.LogEntries) > 0 {
+		entry = req.LogEntries[len(req.LogEntries)-1]
+	}
 	if entry != nil {
 		// Append entry to the log
 		if err := raft.LogObj.AppendEntry(entry.(util.LogEntryObj)); err != nil {
@@ -599,6 +604,8 @@ func (raft *Raft) validateAppendEntryRequest(req util.AppendEntryRequest) (util.
 
 	if req.LeaderCommitIndex > 0 && req.LeaderCommitIndex > raft.LogObj.GetCommitIndex() {
 		log.Printf("At Server %d, Committing to index %d", raft.ServerID, req.LeaderCommitIndex)
+		lastCommitIndex, _ := raft.LogObj.CommitInfo()
+
 		if err := raft.LogObj.CommitTo(req.LeaderCommitIndex); err != nil {
 			return util.AppendEntryResponse{
 				Term:             raft.Term,
@@ -607,6 +614,17 @@ func (raft *Raft) validateAppendEntryRequest(req util.AppendEntryRequest) (util.
 				PreviousLogIndex: raft.LogObj.LastIndex(),
 				ExpectedIndex:    raft.LogObj.LastIndex() + 1,
 			}, stepDown
+		} else {
+			//Need to execute the newly committed entries onto the state machine
+			logEntries, _ := raft.LogObj.EntriesAfter(lastCommitIndex)
+			newCommitIndex, _ := raft.LogObj.CommitInfo()
+			for _, entry := range logEntries {
+				if entry.LogSeqNumber <= newCommitIndex {
+					raft.CommitCh <- entry
+				} else {
+					break
+				}
+			}
 		}
 	}
 
@@ -631,7 +649,7 @@ func (raft *Raft) sendHeartbeat() {
 				PreviousLogTerm:   raft.LogObj.LastTerm(),
 				LeaderCommitIndex: raft.LogObj.GetCommitIndex(),
 				Term:              raft.Term,
-				LogEntry:          nil,
+				LogEntries:        nil,
 			}
 
 			message := util.Event{util.TypeAppendEntryRequest, heartbeatMsg}

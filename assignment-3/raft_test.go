@@ -33,8 +33,8 @@ func init() {
 		{1, "localhost", 5001, 6001},
 		{2, "localhost", 5002, 6002},
 		{3, "localhost", 5003, 6003},
-		//		{4, "localhost", 5004, 6004},
-		//		{5, "localhost", 5005, 6005},
+//		{4, "localhost", 5004, 6004},
+//		{5, "localhost", 5005, 6005},
 	}
 	clusterConfig = &raft.ClusterConfig{"/log", serverConfig}
 
