@@ -8,6 +8,8 @@ const (
 	TypeVoteReply
 	TypeTimeout
 	TypeClientAppendRequest
+	TypeHeartBeat
+	TypeHeartBeatResponse
 )
 
 const (
@@ -54,7 +56,7 @@ type Event struct {
 
 //This struct will be sent as RPC message between the replicas
 type AppendEntryRequest struct {
-	LogEntries        []LogEntry
+	LogEntries        []LogEntryObj
 	LeaderID          int
 	LeaderCommitIndex Lsn
 	PreviousLogIndex  Lsn

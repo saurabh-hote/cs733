@@ -16,10 +16,9 @@ type Log struct {
 	sync.RWMutex
 	SendToStateMachine func(*LogEntryObj)
 	db                 *bolt.DB
-	entries            []*LogEntryObj
+	entries            []LogEntryObj
 	commitIndex        Lsn
 	initialTerm        uint64
-	insertIndex        Lsn
 }
 
 // create new log
@@ -30,11 +29,10 @@ func NewLog(serverID int) *Log {
 	}
 
 	logObj := &Log{
-		entries:     []*LogEntryObj{},
+		entries:     []LogEntryObj{},
 		db:          boltDB,
 		commitIndex: 0,
 		initialTerm: 0,
-		insertIndex: 0,
 	}
 
 	err = logObj.db.Update(func(tx *bolt.Tx) error {
@@ -59,7 +57,7 @@ func (logObj *Log) CurrentIndex() Lsn {
 	if len(logObj.entries) == 0 {
 		return 0
 	}
-	return logObj.entries[len(logObj.entries)-1].LogSeqNumber
+	return logObj.entries[len(logObj.entries)-1].Lsn()
 }
 
 // Closes the log database.
@@ -68,17 +66,17 @@ func (logObj *Log) Close() {
 	defer logObj.Unlock()
 
 	logObj.db.Close()
-	logObj.entries = make([]*LogEntryObj, 0)
+	logObj.entries = make([]LogEntryObj, 0)
 }
 
 //Does log contains the retry with perticular index and term
 func (logObj *Log) ContainsEntry(index uint64, term uint64) bool {
 	entry := logObj.GetEntry(index)
-	return (entry != nil && entry.Term == term)
+	return (entry != nil && entry.CurrentTerm() == term)
 }
 
 //get perticular entry by index
-func (logObj *Log) GetEntry(index uint64) *LogEntryObj {
+func (logObj *Log) GetEntry(index uint64) LogEntry {
 	if index <= 0 || index > (uint64(len(logObj.entries))) {
 		return nil
 	}
@@ -87,7 +85,7 @@ func (logObj *Log) GetEntry(index uint64) *LogEntryObj {
 
 //read all enteries from disk when log intialized
 func (logObj *Log) FirstRead() error {
-	logObj.entries = []*LogEntryObj{}
+	logObj.entries = []LogEntryObj{}
 
 	err := logObj.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("LogBucket"))
@@ -104,16 +102,20 @@ func (logObj *Log) FirstRead() error {
 
 			if entry.Lsn() > 0 {
 				// Append entry.
-				logObj.entries = append(logObj.entries, entry)
+				logObj.entries = append(logObj.entries, *entry)
 				//TODO: changed the code for incrementing commit index
 				/*if entry.Lsn() <= logObj.commitIndex {
 					logObj.SendToStateMachine(entry)
 				}
 				*/
+
 				if entry.IsCommitted() {
+					log.Printf("Committed entry found with lsn - %d", entry.Lsn())
+
 					logObj.SendToStateMachine(entry)
 					logObj.commitIndex = entry.Lsn()
 				} else {
+					log.Printf("non Committed entry found with lsn - %d", entry.Lsn())
 					break
 				}
 			}
@@ -127,31 +129,39 @@ func (logObj *Log) FirstRead() error {
 }
 
 //It will return the entries after the given index
-func (logObj *Log) EntriesAfter(index Lsn) ([]*LogEntryObj, uint64) {
+func (logObj *Log) EntriesAfter(index Lsn) ([]LogEntryObj, uint64, LogEntry) {
 
-	if index < 0 {
-		return nil, 0
+	if index <= 0 {
+		return nil, 0, nil
 	}
-	if index > logObj.insertIndex-1 {
-		log.Printf("raft: Index is beyond end of log: %v %v", (logObj.insertIndex - 1), index)
+	lastIndex := logObj.LastIndex()
+
+	if index > (lastIndex - 1) {
+		///		log.Printf("LogObj: Index is beyond end of log: %v %v", lastIndex, index)
+		return nil, 0, nil
 	}
 
 	pos := Lsn(0)
 	lastTerm := uint64(0)
-	for ; pos < logObj.insertIndex-1; pos++ {
-		if logObj.entries[pos].LogSeqNumber > index {
+	var previousLogEntry LogEntry
+	for ; pos < lastIndex; pos++ {
+		if logObj.entries[pos].Lsn() > index {
 			break
+		} else if logObj.entries[pos].Lsn() == index {
+			previousLogEntry = logObj.entries[pos]
 		}
-		lastTerm = logObj.entries[pos].Term
+		lastTerm = logObj.entries[pos].CurrentTerm()
 	}
 
-	result := logObj.entries[pos:]
-	if len(result) == 0 {
-		return []*LogEntryObj{}, lastTerm
+	entries := logObj.entries[pos:]
+	result := []LogEntryObj{}
+
+	for _, entry := range entries {
+		result = append(result, entry)
 	}
 
 	//if entries are less then max limit then return all entries
-	return result, lastTerm
+	return result, lastTerm, previousLogEntry
 }
 
 //Return the last log entry term
@@ -159,7 +169,7 @@ func (logObj *Log) LastTerm() uint64 {
 	if len(logObj.entries) <= 0 {
 		return 0
 	}
-	return logObj.entries[len(logObj.entries)-1].Term
+	return logObj.entries[len(logObj.entries)-1].CurrentTerm()
 }
 
 //Remove the enteries which are not commited
@@ -173,9 +183,9 @@ func (logObj *Log) Discard(index Lsn, term uint64) error {
 	} else if index <= Lsn(len(logObj.entries)) {
 		// Do not discard if the entry at index does not have the matching term.
 		logEntry := logObj.entries[index-1]
-		if logEntry.Term > term {
+		if logEntry.CurrentTerm() > term {
 			return errors.New("Discard failed. Term mismatch")
-		} else if logEntry.Committed {
+		} else if logEntry.IsCommitted() {
 			return errors.New("Discard failed. Entry already committed.")
 		} else if index < Lsn(len(logObj.entries)) {
 
@@ -195,7 +205,7 @@ func (logObj *Log) Discard(index Lsn, term uint64) error {
 				if err != nil {
 					log.Printf("Entry with lsn %d not found in db", entry.Lsn())
 				}
-				entry.Committed = false
+				//entry.IsCommitted() = false
 			}
 			logObj.entries = logObj.entries[0:index]
 		}
@@ -215,22 +225,23 @@ func (logObj *Log) LastIndex() Lsn {
 	if len(logObj.entries) <= 0 {
 		return 0
 	}
-	return logObj.entries[len(logObj.entries)-1].LogSeqNumber
+	return logObj.entries[len(logObj.entries)-1].Lsn()
 }
 
 // Appends a series of entries to the log.
-func (logObj *Log) AppendEntries(entries []*LogEntryObj) error {
+func (logObj *Log) AppendEntries(entries []LogEntryObj) error {
 	logObj.Lock()
 	defer logObj.Unlock()
 
 	// Append each entry but exit if we hit an error.
-	for i := range entries {
-		if err := logObj.writeToDB(entries[i]); err != nil {
+	for _, entry := range entries {
+		if err := logObj.writeToDB(&entry); err != nil {
 			return err
 		} else {
-			logObj.entries = append(logObj.entries, entries[i])
+			logObj.entries = append(logObj.entries, entry)
 		}
 	}
+
 	return nil
 }
 
@@ -239,10 +250,10 @@ func (logObj *Log) AppendEntry(entry LogEntryObj) error {
 	defer logObj.Unlock()
 
 	if len(logObj.entries) > 0 {
-		if entry.Term < logObj.LastTerm() {
+		if entry.CurrentTerm() < logObj.LastTerm() {
 			return errors.New("AppendEntry failed. Invalid term")
 		}
-		if entry.Term == logObj.LastTerm() && entry.LogSeqNumber <= logObj.LastIndex() {
+		if entry.CurrentTerm() == logObj.LastTerm() && entry.Lsn() <= logObj.LastIndex() {
 			return errors.New("AppendEntry failed. Invalid index")
 		}
 	}
@@ -250,7 +261,7 @@ func (logObj *Log) AppendEntry(entry LogEntryObj) error {
 	if err := logObj.writeToDB(&entry); err != nil {
 		return err
 	} else {
-		logObj.entries = append(logObj.entries, &entry)
+		logObj.entries = append(logObj.entries, entry)
 	}
 	return nil
 
@@ -282,10 +293,10 @@ func (logObj *Log) CommitTo(commitIndex Lsn) error {
 	for i := logObj.commitIndex + 1; i <= commitIndex; i++ {
 		entryIndex := i - 1
 		entry := logObj.entries[entryIndex]
+		entry.Committed = true
 
 		// Update commit index.
-		logObj.commitIndex = entry.LogSeqNumber
-		entry.Committed = true
+		logObj.commitIndex = entry.Lsn()
 
 		var data bytes.Buffer
 		enc := gob.NewEncoder(&data)
@@ -319,7 +330,7 @@ func (logObj *Log) CommitInfo() (index Lsn, term uint64) {
 	}
 
 	entry := logObj.entries[logObj.commitIndex-1]
-	return entry.LogSeqNumber, entry.Term
+	return entry.Lsn(), entry.CurrentTerm()
 }
 
 //Write entry to leveldb
@@ -331,7 +342,7 @@ func (logObj *Log) writeToDB(logItem *LogEntryObj) error {
 		log.Printf("GOB error: %s", err.Error())
 	}
 	buf := make([]byte, 8)
-	binary.LittleEndian.PutUint64(buf, uint64(logItem.Lsn()))
+	binary.LittleEndian.PutUint64(buf, uint64((*logItem).Lsn()))
 
 	err = logObj.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("LogBucket"))
