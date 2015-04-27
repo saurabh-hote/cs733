@@ -2,8 +2,6 @@ package handler
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/gob"
 	"fmt"
 	util "github.com/saurabh-hote/cs733/assignment-3/util"
 	"io"
@@ -11,27 +9,10 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 )
 
-const (
-	Set = iota
-	Get
-	Getm
-	Cas
-	Delete
-	Cleanup
-)
-
-type Command struct {
-	Action   int
-	Key      string
-	Expiry   int64
-	Version  uint64
-	Numbytes int
-	Data     []byte
-}
-
-func StartConnectionHandler(serverID int, clientPort int, appendReqChannel chan util.Event) {
+func StartConnectionHandler(serverID int, clientPort int, appendReqChannel chan util.Event, mutex *sync.Mutex) {
 
 	sock, err := net.Listen("tcp", ":"+strconv.FormatInt(int64(clientPort), 10))
 	if err != nil {
@@ -42,11 +23,11 @@ func StartConnectionHandler(serverID int, clientPort int, appendReqChannel chan 
 		if err != nil {
 			return
 		}
-		go HandleConn(serverID, conn, appendReqChannel)
+		go HandleConn(serverID, conn, appendReqChannel, mutex)
 	}
 }
 
-func HandleConn(serverID int, conn net.Conn, appendReqChannel chan util.Event) {
+func HandleConn(serverID int, conn net.Conn, appendReqChannel chan util.Event, mutex *sync.Mutex) {
 	addr := conn.RemoteAddr()
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
@@ -77,7 +58,7 @@ func HandleConn(serverID int, conn net.Conn, appendReqChannel chan util.Event) {
 			responseChannel <- e.Error()
 		} else {
 			//Do work here
-			if cmd.Action == Set || cmd.Action == Cas {
+			if cmd.Action == util.Set || cmd.Action == util.Cas {
 				buf := make([]byte, cmd.Numbytes)
 				_, ed := io.ReadFull(reader, buf)
 				if (ed) != nil {
@@ -98,7 +79,7 @@ func HandleConn(serverID int, conn net.Conn, appendReqChannel chan util.Event) {
 				}
 			}
 
-			data, err := EncodeCommand(cmd)
+			data, err := util.EncodeCommand(cmd)
 
 			if err != nil {
 				log.Printf("At Server %d, ERROR in encoding to gob -  %s", serverID, err.Error())
@@ -107,6 +88,9 @@ func HandleConn(serverID int, conn net.Conn, appendReqChannel chan util.Event) {
 			//now create message for the shared log module
 			message := util.Event{util.TypeClientAppendRequest, util.ClientAppendRequest{data, &responseChannel}}
 
+			//Obtain a lock on the raft instance
+			//mutex.Lock()
+				
 			//push the messgae onto the shared channel
 			//This will block until previous request gets completed
 			appendReqChannel <- message
@@ -116,26 +100,14 @@ func HandleConn(serverID int, conn net.Conn, appendReqChannel chan util.Event) {
 	log.Printf("At Server %d, Closing the client port.", serverID)
 
 	//Remove the response channel from the map
-
+	util.ResponseChannelStore.Lock()
+	for key, value := range util.ResponseChannelStore.M {
+		if *value == responseChannel {
+			delete(util.ResponseChannelStore.M, key)
+		}
+	}
+	util.ResponseChannelStore.Unlock()
 	conn.Close()
-}
-
-//Encode using gob
-func EncodeCommand(cmd Command) ([]byte, error) {
-	var buff bytes.Buffer
-	enc := gob.NewEncoder(&buff)
-	err := enc.Encode(cmd)
-	return buff.Bytes(), err
-}
-
-//Decode using gob
-func DecodeCommand(data []byte) (Command, error) {
-	var buff bytes.Buffer
-	buff.Write(data)
-	enc := gob.NewDecoder(&buff)
-	var command Command
-	err := enc.Decode(&command)
-	return command, err
 }
 
 func pollAndReply(serverID int, w *bufio.Writer, clientAddr net.Addr, responseChannel *chan string) {

@@ -1,1 +1,1 @@
-{"Path":"/log","Servers":[{"Id":1,"Hostname":"localhost","ClientPort":5001,"LogPort":6001},{"Id":2,"Hostname":"localhost","ClientPort":5002,"LogPort":6002},{"Id":3,"Hostname":"localhost","ClientPort":5003,"LogPort":6003}]}
+{"Path":"/log","Servers":[{"Id":1,"Hostname":"localhost","ClientPort":5001,"LogPort":6001},{"Id":2,"Hostname":"localhost","ClientPort":5002,"LogPort":6002},{"Id":3,"Hostname":"localhost","ClientPort":5003,"LogPort":6003},{"Id":4,"Hostname":"localhost","ClientPort":5004,"LogPort":6004},{"Id":5,"Hostname":"localhost","ClientPort":5005,"LogPort":6005}]}

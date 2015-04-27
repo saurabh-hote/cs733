@@ -31,7 +31,7 @@ func ReadConfig(path string) (*raft.ClusterConfig, error) {
 }
 
 func main() {
-	//log.SetOutput(new(NullWriter))
+	log.SetOutput(new(NullWriter))
 
 	//TODO: Read the config.json file to get all the server configurations
 	clusterConfig, err := ReadConfig("config.json")
@@ -66,11 +66,11 @@ func main() {
 			raftInstance.CurrentState = raft.FOLLOWER
 		}
 	}
-
+	
 	if clientPort <= 0 {
 		log.Println("Server's client port not valid")
 	} else {
-		go handler.StartConnectionHandler(raftInstance.ServerID, clientPort, raftInstance.EventInCh)
+		go handler.StartConnectionHandler(raftInstance.ServerID, clientPort, raftInstance.EventInCh, raftInstance.Mutex)
 	}
 
 	//Inititialize the KV Store Module

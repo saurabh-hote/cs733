@@ -71,6 +71,7 @@ type AppendEntryResponse struct {
 	Success          bool
 	PreviousLogIndex Lsn
 	ExpectedIndex    Lsn
+	RequestedIndex Lsn
 }
 
 type VoteRequest struct {

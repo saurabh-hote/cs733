@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	util "github.com/saurabh-hote/cs733/assignment-3/util"
 )
 
-func Parse(cmd string) (Command, error) {
+func Parse(cmd string) (util.Command, error) {
 	arr := strings.Split(cmd, " ")
-	c := Command{0, "", 0, 0, 0, nil}
+	c := util.Command{0, "", 0, 0, 0, nil}
 	e := errors.New("ERR_CMD_ERR\r\n")
 	l := len(arr)
 	switch arr[0] {
@@ -18,7 +19,7 @@ func Parse(cmd string) (Command, error) {
 			if l != 4 {
 				return c, e
 			}
-			c.Action = Set
+			c.Action = util.Set
 			c.Key = arr[1]
 			exp, e1 := strconv.Atoi(arr[2])
 			if e1 != nil || exp < 0 {
@@ -37,7 +38,7 @@ func Parse(cmd string) (Command, error) {
 			if l != 2 {
 				return c, e
 			}
-			c.Action = Get
+			c.Action = util.Get
 			c.Key = arr[1]
 		}
 	case "getm":
@@ -45,7 +46,7 @@ func Parse(cmd string) (Command, error) {
 			if l != 2 {
 				return c, e
 			}
-			c.Action = Getm
+			c.Action = util.Getm
 			c.Key = arr[1]
 		}
 	case "cas":
@@ -53,7 +54,7 @@ func Parse(cmd string) (Command, error) {
 			if l != 5 {
 				return c, e
 			}
-			c.Action = Cas
+			c.Action = util.Cas
 			c.Key = arr[1]
 			exp, e1 := strconv.Atoi(arr[2])
 			if e1 != nil || exp < 0 {
@@ -76,7 +77,7 @@ func Parse(cmd string) (Command, error) {
 			if l != 2 {
 				return c, e
 			}
-			c.Action = Delete
+			c.Action = util.Delete
 			c.Key = arr[1]
 		}
 	case "cleanup": // Not specified in syntax, but provides manual cleanup option
@@ -84,7 +85,11 @@ func Parse(cmd string) (Command, error) {
 			if l != 1 {
 				return c, e
 			}
-			c.Action = Cleanup
+			c.Action = util.Cleanup
+		}
+	case "stopserver":
+		{
+			c.Action = util.StopServer
 		}
 	default:
 		{

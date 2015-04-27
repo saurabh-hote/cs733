@@ -3,13 +3,12 @@ package raft
 import (
 	"container/heap"
 	"fmt"
-	handler "github.com/saurabh-hote/cs733/assignment-3/handler"
 	util "github.com/saurabh-hote/cs733/assignment-3/util"
 	"log"
 	"time"
 )
 
-type command handler.Command
+type command util.Command
 
 type value struct {
 	data     []byte
@@ -23,21 +22,24 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 	//The map which actually stores values
 	m := make(map[string]value)
 	h := &nodeHeap{}
-	var counter uint64 = 0
 	const heapCleanupInterval = 60
 	go cleaner(heapCleanupInterval, ch)
 	for {
 		logEntry := <-ch
-		cmd, _ := handler.DecodeCommand(logEntry.Data())
+		cmd, _ := util.DecodeCommand(logEntry.Data())
 
 		responseMsg := "ERR_NOT_FOUND\r\n"
 		val, ok := m[cmd.Key]
 
 		switch cmd.Action {
-		case handler.Set:
+		case util.Set:
 			{
-				version := counter
-				counter++
+				var version uint64
+				version = 0
+				if ok {
+					version = val.version
+				}
+
 				t := cmd.Expiry
 				if t != 0 {
 					t += time.Now().Unix()
@@ -48,13 +50,13 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 				}
 				responseMsg = fmt.Sprintf("OK %v\r\n", version)
 			}
-		case handler.Get:
+		case util.Get:
 			{
 				if ok {
 					responseMsg = fmt.Sprintf("VALUE %v\r\n"+string(val.data)+"\r\n", val.numbytes)
 				}
 			}
-		case handler.Getm:
+		case util.Getm:
 			{
 				if ok {
 					t := val.expiry
@@ -64,7 +66,7 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 					responseMsg = fmt.Sprintf("VALUE %v %v %v\r\n"+string(val.data)+"\r\n", val.version, t, val.numbytes)
 				}
 			}
-		case handler.Cas:
+		case util.Cas:
 			{
 				if ok {
 					if val.version == cmd.Version {
@@ -72,8 +74,7 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 						if t != 0 {
 							t += time.Now().Unix()
 						}
-						version := counter
-						counter++
+						version := val.version + 1
 						m[cmd.Key] = value{cmd.Data, cmd.Numbytes, version, t}
 						if cmd.Expiry != 0 {
 							heap.Push(h, node{t, cmd.Key, version})
@@ -84,14 +85,14 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 					}
 				}
 			}
-		case handler.Delete:
+		case util.Delete:
 			{
 				if ok {
 					delete(m, cmd.Key)
 					responseMsg = "DELETED\r\n"
 				}
 			}
-		case handler.Cleanup:
+		case util.Cleanup:
 			{
 				t := time.Now().Unix()
 				for (*h).Len() != 0 && (*h)[0].expiry <= t {
@@ -109,7 +110,7 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 			}
 		}
 
-		if cmd.Action != handler.Cleanup {
+		if cmd.Action != util.Cleanup {
 			// Send response to appropriate handler's channel
 			util.ResponseChannelStore.RLock()
 			responseChannel := util.ResponseChannelStore.M[logEntry.Lsn()]
@@ -129,8 +130,8 @@ func InitializeKVStore(serverID int, ch chan util.LogEntry) { //	This channel ha
 }
 
 func cleaner(interval int, ch chan util.LogEntry) {
-	command := handler.Command{handler.Cleanup, "", 0, 0, 0, nil}
-	data, err := handler.EncodeCommand(command)
+	command := util.Command{util.Cleanup, "", 0, 0, 0, nil}
+	data, err := util.EncodeCommand(command)
 	logEntry := util.LogEntryObj{0, data, false, 0}
 	if err != nil {
 		log.Println("Error encoding the command ", err.Error())
