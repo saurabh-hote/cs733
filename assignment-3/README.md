@@ -2,9 +2,6 @@
 
 Saurabh Hote 13305R008
 
-Note: 
-Coded and tested for the leader election part and log synchronization. The code is ready with integration of memcached key value store. However some parts still need to be tested throughly. I will need a couple of more days to complete the testing. 
-
 # Description
 This piece of work is an implementation of Raft protocol for distributed consensus. The reference paper can be found at https://ramcloud.stanford.edu/raft.pdf
 In Raft, consistency is achieved by ensuring that if any server has applied a particular log entry to its state machine, then no other server may apply a different command for the same log index.
